@@ -792,6 +792,13 @@
     }
   },
   "bookshelf": {
+    "exportCompletedTxt": "导出已完成章节 TXT",
+    "exportCompletedLoading": "正在导出…",
+    "exportCompletedHint": "按章节顺序导出已保存且正文非空的章节，不包含候选稿和回收站内容。",
+    "exportCompletedEmpty": "暂无可导出的已完成章节，请先生成或保存章节正文。",
+    "exportCompletedSuccess": "已开始下载 TXT，共 {count, number} 章已保存正文。",
+    "exportCompletedChanged": "导出期间章节已变化，本次未导出，请重试。",
+    "exportCompletedFailed": "章节读取或导出失败，本次未生成文件，请重试。",
     "viewChapterRecords": "查看章后记录",
     "title": "我的书架",
     "newNovel": "新建小说",

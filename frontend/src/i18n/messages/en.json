@@ -792,6 +792,13 @@
     }
   },
   "bookshelf": {
+    "exportCompletedTxt": "Export completed chapters (TXT)",
+    "exportCompletedLoading": "Exporting…",
+    "exportCompletedHint": "Export saved, non-empty chapter text in reading order. Candidates and trashed chapters are excluded.",
+    "exportCompletedEmpty": "No completed chapters to export. Generate or save chapter text first.",
+    "exportCompletedSuccess": "TXT download started with {count, number} saved chapters.",
+    "exportCompletedChanged": "Chapters changed during export. No file was exported; please retry.",
+    "exportCompletedFailed": "Could not read or export the chapters. No file was created; please retry.",
     "viewChapterRecords": "View chapter records",
     "title": "My Bookshelf",
     "newNovel": "New Novel",

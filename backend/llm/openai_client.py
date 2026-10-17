@@ -79,6 +79,12 @@ def build_openai_parameters(request: LLMRequest, config: LLMProviderConfig,
 
     params: dict[str, Any] = {"model": model}
     json_output = config.resolved_structured_output_mode == "json_object" and (schema is not None or config.json_output_enabled)
+    output_schema = schema.model_json_schema() if schema is not None else request.json_output_schema
+    native_schema = schema is not None or (config.supports_json_schema and config.uses_native_schema)
+    if native_schema and output_schema is not None and not config.is_deepseek:
+        # 自由字典/Any 无法表示为 strict Schema。保留业务结构及完整本地校验，
+        # 仅把本次传输改为 JSON Output，不能关闭 additionalProperties 丢弃扩展资料。
+        json_output = json_output or requires_openai_json_object(output_schema)
     content = build_openai_request_content(request, schema, json_output=json_output)
     params["input" if responses else "messages"] = content["messages"]
     if responses:
@@ -109,7 +115,7 @@ def build_openai_parameters(request: LLMRequest, config: LLMProviderConfig,
             params["reasoning"] = {"effort": "high"}
     else:
         params.update({key: value for key, value in content.items() if key != "messages"})
-        if schema is None and request.json_output_schema is not None and config.supports_json_schema and config.uses_native_schema:
+        if not json_output and schema is None and request.json_output_schema is not None and config.supports_json_schema and config.uses_native_schema:
             params["response_format"] = {"type": "json_schema", "json_schema": {
                 "name": "generated_output", "strict": True, "schema": build_openai_schema(request.json_output_schema),
             }}
@@ -143,6 +149,33 @@ def build_openai_parameters(request: LLMRequest, config: LLMProviderConfig,
             if getattr(request, field) is not None and not reasoning_model:
                 params[field] = getattr(request, field)
     return params
+
+
+def requires_openai_json_object(schema: dict[str, Any]) -> bool:
+    """检测不能无损转换为 OpenAI strict Schema 的开放结构。
+
+    只遍历 Schema 位置，避免把 example/default 中的业务字段当成约束。
+    调用方随后发送原 Schema 提示并照常执行本地 Pydantic 校验。
+    """
+    pending = [schema]
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, dict):
+            if current is True:
+                return True
+            continue
+        if not current or not any(key in current for key in ("type", "$ref", "anyOf", "oneOf", "allOf")):
+            return True
+        additional = current.get("additionalProperties")
+        if additional is True or isinstance(additional, dict) or current.get("patternProperties"):
+            return True
+        for keyword in ("properties", "$defs", "definitions"):
+            pending.extend(current.get(keyword, {}).values())
+        if "items" in current:
+            pending.append(current["items"])
+        for keyword in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            pending.extend(current.get(keyword, []))
+    return False
 
 
 def build_openai_schema(schema: type[BaseModel] | dict[str, Any]) -> dict[str, Any]:

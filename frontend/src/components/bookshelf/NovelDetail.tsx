@@ -2,7 +2,7 @@
 "use client";
 import { SectionActionButton } from "@/components/shared/SectionEditButton";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter, usePathname } from "next/navigation";
 import { Button, Chip } from "@heroui/react";
@@ -10,6 +10,8 @@ import { ConfirmActionModal } from "@/components/shared/RelationEditorPrimitives
 import { getImageUrl } from "@/lib/api";
 import type { NovelDetail } from "@/types/novel";
 import ChapterRecordsArchive from "@/components/writing/chapter-records/ChapterRecordsArchive";
+import { ChapterExportChangedError, prepareCompletedChapterExport } from "@/lib/completedChapterExport";
+import { downloadExport } from "@/lib/userExport";
 
 interface NovelDetailPanelProps {
   novel: NovelDetail | null;
@@ -54,6 +56,9 @@ export default function NovelDetailPanel({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [recordsOpen, setRecordsOpen] = useState(false);
+  const exportBusy = useRef(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportNotice, setExportNotice] = useState<{ novelId: string; message: string; error: boolean } | null>(null);
 
   if (loading || !novel) {
     return (
@@ -113,6 +118,36 @@ export default function NovelDetailPanel({
   const goWriting = () => {
     router.push(`/${locale}/writing/${novel.id}`);
   };
+  const exportCompletedChapters = async () => {
+    if (exportBusy.current) return;
+    exportBusy.current = true;
+    setExporting(true);
+    setExportNotice(null);
+    try {
+      const result = await prepareCompletedChapterExport(novel.id, novel.title, intlLocale);
+      if (!result) {
+        setExportNotice({ novelId: novel.id, message: tb("exportCompletedEmpty"), error: false });
+        return;
+      }
+      const url = URL.createObjectURL(new Blob(["\uFEFF", result.text], { type: "text/plain;charset=utf-8" }));
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = result.filename;
+        downloadExport(link);
+      } finally {
+        // 给浏览器时间启动下载，项目内副本由现有导出工具保存。
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+      setExportNotice({ novelId: novel.id, message: tb("exportCompletedSuccess", { count: result.chapterCount }), error: false });
+    } catch (error) {
+      setExportNotice({ novelId: novel.id, error: true, message: error instanceof ChapterExportChangedError
+        ? tb("exportCompletedChanged") : tb("exportCompletedFailed") });
+    } finally {
+      exportBusy.current = false;
+      setExporting(false);
+    }
+  };
   const hasNarrative = PREVIEW_LONG_FIELDS.some(({ key }) => novel[key]);
 
   return (
@@ -167,9 +202,17 @@ export default function NovelDetailPanel({
           <Button variant="outline" size="sm" onPress={() => setRecordsOpen(true)}>
             {tb("viewChapterRecords")}
           </Button>
+          <span className="inline-flex" title={tb("exportCompletedHint")}>
+          <Button variant="outline" size="sm" isDisabled={exporting} onPress={() => void exportCompletedChapters()}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
+            {tb(exporting ? "exportCompletedLoading" : "exportCompletedTxt")}
+          </Button>
+          </span>
           <SectionActionButton action="trash" label={t("delete")} variant="ghost" size="sm" className="text-red-700 hover:bg-red-500/10 dark:text-red-300" onPress={() => setConfirmingDelete(true)} />
         </div>
       </header>
+
+      {exportNotice?.novelId === novel.id && <p role={exportNotice.error ? "alert" : "status"} className={`mt-3 text-sm ${exportNotice.error ? "text-danger" : "text-muted"}`}>{exportNotice.message}</p>}
 
       {/* 宽屏用右侧展示已有设定，正文占满剩余栏宽；窄屏按阅读顺序回到单列。 */}
       <div className={`mt-4 grid min-w-0 gap-y-4 ${hasNarrative ? "@[960px]/book:grid-cols-[minmax(0,1fr)_15rem] @[960px]/book:gap-8" : ""}`}>
