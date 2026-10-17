@@ -24,8 +24,11 @@ class ResponsesClient(OpenAICompatibleClient):
 
     def _build_params(self, request: LLMRequest, *, function_calling: bool = False,
                       schema: type[BaseModel] | None = None) -> dict[str, Any]:
-        return build_openai_parameters(request, self.config, schema=schema,
-                                       function_calling=function_calling, api_mode="responses")
+        params = build_openai_parameters(request, self.config, schema=schema,
+                                        function_calling=function_calling, api_mode="responses")
+        if self.config.auth_mode == "chatgpt":
+            params["store"] = False
+        return params
 
     @staticmethod
     def _extract_usage(usage: Any) -> TokenUsage:
@@ -57,19 +60,29 @@ class ResponsesClient(OpenAICompatibleClient):
         Returns:
             包含全部 output 项的 SDK 响应。
         """
+        if self.config.auth_mode == "chatgpt":
+            stream = True
+            params["store"] = False
         if not stream:
             return await self._client.responses.create(**params)
         response = None
+        completed_items: dict[int, Any] = {}
         events = await self._client.responses.create(**params, stream=True)
         async with events:
             async for event in events:
                 observe_provider_response(event, self.config.resolved_api_mode)
-                if event.type in {"response.completed", "response.incomplete", "response.failed"}:
+                if event.type == "response.output_item.done":
+                    # Some OAuth streams have an empty output in the terminal snapshot.
+                    # Keep the final item events, including JSON, calls and encrypted reasoning.
+                    completed_items[event.output_index] = event.item
+                elif event.type in {"response.completed", "response.incomplete", "response.failed"}:
                     response = event.response
                 elif event.type == "error":
                     raise LLMResponseError(event.message, provider=self.provider_name)
         if response is None:
             raise LLMConnectionError("Responses 响应流提前断开，请重试", provider=self.provider_name)
+        if completed_items and not response.output:
+            response = response.model_copy(update={"output": [completed_items[index] for index in sorted(completed_items)]})
         return response
 
     async def _generate(self, request: LLMRequest, schema: type[BaseModel] | None = None) -> LLMResponse:
@@ -227,10 +240,13 @@ class ResponsesClient(OpenAICompatibleClient):
                 raise LLMResponseError("模型未返回指定工具调用", provider=self.provider_name, model=model)
             for item in first.calls:
                 self._validate_probe_arguments(item.arguments, probe.expected_arguments)
-            # 提示放入工具结果，下一轮必须先收到所有调用的返回值。
-            results = [LLMToolResult(id=item.id, name=item.name,
-                                    content={**probe.tool_result, "next_instruction": probe.final_response_prompt}) for item in first.calls]
-            final = await self.tool_turn(request, tools, history=first.history, results=results)
+            # Return every tool result before adding the next user instruction.
+            # A tool result is data, not a replacement for the first user's "do not answer" instruction.
+            followup = deepcopy(first.history)
+            followup.extend({"type": "function_call_output", "call_id": item.id,
+                             "output": json.dumps(probe.tool_result, ensure_ascii=False)} for item in first.calls)
+            followup.append({"role": "user", "content": probe.final_response_prompt})
+            final = await self.tool_turn(request, tools, history=followup)
             self._validate_probe_final_text(final.content, probe.expected_final_text)
             result = LLMResponse(content=final.content, model=model, provider=self.provider_name,
                                  raw_response={"history": final.history}, finish_reason=final.finish_reason,

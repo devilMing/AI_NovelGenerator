@@ -26,6 +26,8 @@ class LLMProviderConfig(ReasoningOptions):
     type: LLMProviderType = Field(default="openai", description="接口模式: openai / gemini / claude / deepseek")
     base_url: str = Field(default="", description="服务商 API 基地址")
     api_key: str = Field(default="", description="API Key")
+    auth_mode: Literal["api_key", "chatgpt"] = "api_key"
+    chatgpt_account_id: str = ""
     default_model: str = Field(default="", description="默认模型名称")
     enabled: bool = Field(default=False, description="是否启用")
     timeout_seconds: int = Field(default=60, description="请求超时（秒）")
@@ -53,6 +55,10 @@ class LLMProviderConfig(ReasoningOptions):
     frequency_penalty: float | None = Field(default=None, ge=-2, le=2, description="默认频率惩罚")
 
     @property
+    def has_credentials(self) -> bool:
+        return bool(self.chatgpt_account_id) if self.auth_mode == "chatgpt" else bool(self.api_key)
+
+    @property
     def is_deepseek(self) -> bool:
         """判断当前配置是否选用 DeepSeek 兼容模式。
 
@@ -68,6 +74,10 @@ class LLMProviderConfig(ReasoningOptions):
         Returns:
             当前 Provider 使用的接口名称。
         """
+        if self.auth_mode == "chatgpt":
+            if self.type != "openai":
+                raise ValueError("ChatGPT 授权仅支持 OpenAI Responses 接口")
+            return "responses"
         allowed = {"openai": {"responses", "chat_completions"},
                    "deepseek": {"responses", "chat_completions"},
                    "gemini": {"interactions", "generate_content"}, "claude": {"messages"}}

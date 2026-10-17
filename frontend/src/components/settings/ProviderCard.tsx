@@ -19,6 +19,7 @@ import {
 } from "@heroui/react";
 import { TooltipHint } from "@/components/shared/TooltipHint";
 import { ReasoningControls } from "@/components/shared/ReasoningControls";
+import { ChatGPTAuth } from "@/components/settings/ChatGPTAuth";
 import { apiPost } from "@/lib/api";
 import { isValidProviderAlias } from "@/lib/validation";
 import type {
@@ -345,7 +346,7 @@ export function ProviderCard({
         alias,
         provider: { ...providerFields, api_key: oneTimeApiKey },
         use_stored_api_key:
-          keyUpdate.action === "preserve" && provider.api_key_configured,
+          provider.auth_mode !== "chatgpt" && keyUpdate.action === "preserve" && provider.api_key_configured,
       });
 
       if (testRequests.current[alias] !== requestId) return;
@@ -823,7 +824,7 @@ function ProviderDetail({
                 const nextType = String(key) as ProviderConfig["type"];
                 // 第三方网关地址通常跨类型复用，只有空值或官方默认地址才随类别切换。
                 onChange({
-                  type: nextType, api_mode: "auto", structured_output_mode: "auto",
+                  type: nextType, api_mode: "auto", structured_output_mode: "auto", auth_mode: "api_key",
                   reasoning_effort: null, thinking_mode: null, thinking_budget: null, reasoning_mode: null, verbosity: null,
                   base_url: resolveBaseUrlForProviderTypeChange(provider.base_url, nextType),
                 });
@@ -846,7 +847,7 @@ function ProviderDetail({
 
             {provider.type !== "claude" && <div className="flex flex-col gap-1.5">
               <TooltipHint className="h-5 text-sm leading-5 text-muted [&_button]:h-5! [&_button]:min-h-0!" label={t("apiMode")} text={t(provider.type === "gemini" ? "apiModeHelpGemini" : "apiModeHelp")} />
-              <Select className="gap-0" aria-label={t("apiMode")} selectedKey={provider.api_mode ?? "auto"}
+              <Select className="gap-0" isDisabled={provider.auth_mode === "chatgpt"} aria-label={t("apiMode")} selectedKey={provider.auth_mode === "chatgpt" ? "responses" : provider.api_mode ?? "auto"}
               onSelectionChange={(key) => onChange({ api_mode: String(key) as ProviderConfig["api_mode"] })}>
               <Select.Trigger className="h-11 min-h-11 items-center rounded-xl border border-border bg-background/80 px-3 py-0 text-sm shadow-none"><Select.Value className="min-w-0 truncate leading-5" /></Select.Trigger>
               <Select.Popover><ListBox>
@@ -871,13 +872,14 @@ function ProviderDetail({
             </TextField>
 
             <div className="md:col-span-2">
-              <TextField value={provider.base_url} onChange={(value) => onChange({ base_url: value })}>
+              <TextField isDisabled={provider.auth_mode === "chatgpt"} value={provider.auth_mode === "chatgpt" ? "https://api.openai.com" : provider.base_url} onChange={(value) => onChange({ base_url: value })}>
                 <Label className="text-sm text-muted">{t("baseUrl")}</Label>
                 <Input placeholder={baseUrlPlaceholder} className="border-border" />
               </TextField>
             </div>
 
-            <div className="space-y-2 md:col-span-2">
+            {provider.type === "openai" && <ChatGPTAuth provider={provider} onChange={onChange} />}
+            {provider.auth_mode !== "chatgpt" && <div className="space-y-2 md:col-span-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Label className="text-sm text-muted">{t("apiKey")}</Label>
                 <StatusChip tone={keyStatusTone}>{keyStatusLabel}</StatusChip>
@@ -961,8 +963,7 @@ function ProviderDetail({
                   ) : null}
                 </div>
               )}
-            </div>
-
+            </div>}
             {/* 数字配置改为单列，避免步进按钮挤压标签和输入内容。 */}
             <div className="md:col-span-2">
               <NumberField

@@ -290,6 +290,15 @@ class OpenAICompatibleClient(BaseLLMClient):
     def __init__(self, config: LLMProviderConfig, provider_name: str = "openai") -> None:
         super().__init__(config, provider_name)
         base_url = config.base_url.strip()
+        api_key = config.api_key
+        if config.auth_mode == "chatgpt":
+            from backend.llm.chatgpt_auth import access_token
+            base_url = "https://api.openai.com/v1"
+
+            async def oauth_key():
+                return await access_token(config.chatgpt_account_id)
+
+            api_key = oauth_key
         if config.is_deepseek and not base_url:
             base_url = "https://api.deepseek.com"
         self._http_client = openai.DefaultAsyncHttpxClient(
@@ -306,7 +315,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         self._client = AsyncOpenAI(
             base_url=(base_url.rstrip("/") if config.is_deepseek and config.resolved_api_mode == "responses"
                       else _build_openai_sdk_base_url(base_url)),
-            api_key=config.api_key,
+            api_key=api_key,
             timeout=float(config.timeout_seconds),
             max_retries=config.max_retries,
             http_client=self._http_client,
@@ -372,6 +381,9 @@ class OpenAICompatibleClient(BaseLLMClient):
             return LLMRateLimitError(str(exc), **kwargs)
         if isinstance(exc, openai.APITimeoutError):
             return LLMTimeoutError(str(exc), **kwargs)
+        if isinstance(exc, openai.APIConnectionError):
+            hint = "请检查本机代理服务及网络连接" if self.config.use_system_proxy else "请检查网络；如浏览器通过代理上网，请开启此 Provider 的“使用系统代理”"
+            return LLMConnectionError(f"无法连接模型服务，{hint}", **kwargs)
         if isinstance(exc, openai.APIError):
             return LLMResponseError(str(exc), **kwargs)
         return LLMError(str(exc), **kwargs)

@@ -1,6 +1,8 @@
 import { REASONING_FIELDS, type ReasoningOptions } from "@/types/generation";
 
 export interface ProviderConfig extends ReasoningOptions {
+  auth_mode?: "api_key" | "chatgpt";
+  chatgpt_account_id?: string;
   api_mode?: "auto" | "responses" | "chat_completions" | "interactions" | "generate_content";
   structured_output_mode?: "auto" | "json_schema" | "json_object" | "tool_call";
   type: "openai" | "deepseek" | "gemini" | "claude";
@@ -47,6 +49,7 @@ export function isDeepSeekProvider(provider: ProviderConfig): boolean {
 
 /** 选择实际接口。Args: provider 当前配置。Returns: 官方地址用新版，自定义地址保留兼容接口。 */
 export function getProviderApiMode(provider: ProviderConfig): string {
+  if (provider.auth_mode === "chatgpt" && provider.type === "openai") return "responses";
   if (provider.type === "claude") return "messages";
   if (provider.api_mode && provider.api_mode !== "auto") return provider.api_mode;
   const officialHosts = { openai: "api.openai.com", deepseek: "api.deepseek.com", gemini: "generativelanguage.googleapis.com" };
@@ -229,7 +232,7 @@ export function buildConfigSavePayload(
     Object.entries(config.llm.providers).map(([alias, provider]) => {
       const previous = previousProviders[alias];
       const fields = [
-        "type", "api_mode", "structured_output_mode", "base_url", "default_model", "enabled",
+        "type", "auth_mode", "chatgpt_account_id", "api_mode", "structured_output_mode", "base_url", "default_model", "enabled",
         "timeout_seconds", "max_retries", "max_concurrency", "use_system_proxy", "supports_streaming",
         "supports_json_schema", "supports_json_output", "supports_function_calling", "temperature", "top_p", "max_tokens",
         "system_prompt", "presence_penalty", "frequency_penalty", ...REASONING_FIELDS,

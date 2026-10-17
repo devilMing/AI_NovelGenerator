@@ -67,6 +67,8 @@ class ProviderConfigPatch(ReasoningOptions):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     type: LLMProviderType | None = None
+    auth_mode: Literal["api_key", "chatgpt"] | None = None
+    chatgpt_account_id: str | None = None
     api_mode: LLMApiMode | None = None
     structured_output_mode: StructuredOutputMode | None = None
     base_url: str | None = None

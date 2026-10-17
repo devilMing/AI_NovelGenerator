@@ -215,6 +215,8 @@ app.include_router(faction_volume_state_router)
 from backend.api.default_routers.export_router import router as export_router
 app.include_router(export_router)
 app.include_router(config_router)
+from backend.api.default_routers.chatgpt_auth_router import router as chatgpt_auth_router
+app.include_router(chatgpt_auth_router)
 app.include_router(runtime_router)
 app.include_router(task_flow_router)
 app.include_router(assistant_router)

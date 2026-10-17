@@ -43,7 +43,7 @@ def resolve_model(settings: dict):
     config = get_llm_config()
     name = settings.get("provider") or config.default_provider
     provider = config.providers.get(name)
-    if provider is None or not provider.enabled or not provider.api_key:
+    if provider is None or not provider.enabled or not provider.has_credentials:
         raise DomainApiError("ASSISTANT_PROVIDER_UNAVAILABLE", "所选模型服务不可用，请检查模型设置", status_code=503)
     if not provider.supports_function_calling:
         raise DomainApiError("ASSISTANT_PROVIDER_UNSUPPORTED", "此模型服务不支持 Function Calling，请选择支持工具调用的服务")

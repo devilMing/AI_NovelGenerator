@@ -1,5 +1,8 @@
 # 本机依赖和构建产物
 .venv/
+.npm-cache/
+.pip-cache/
+package-lock.original.json
 venv/
 node_modules/
 __pycache__/

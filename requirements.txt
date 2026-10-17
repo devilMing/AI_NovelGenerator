@@ -13,3 +13,4 @@ Pillow==12.3.0
 pymongo==4.18.2
 httpx==0.28.1
 httpx2==2.13.1
+PyJWT[crypto]==2.10.1

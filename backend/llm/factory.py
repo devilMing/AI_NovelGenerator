@@ -64,7 +64,9 @@ def create_llm_client_from_config(
         name = provider_name or "default"
         raise ValueError(f"LLM 服务商 '{name}' 未启用，请在配置中设置 enabled: true")
 
-    if not config.api_key:
+    if config.auth_mode == "chatgpt" and not config.chatgpt_account_id:
+        raise ValueError("请先登录并选择 ChatGPT 账号")
+    if not config.api_key and config.auth_mode != "chatgpt":
         raise ValueError("LLM 服务商未配置 api_key")
 
     provider_type = config.type

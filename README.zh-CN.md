@@ -115,6 +115,15 @@ docker compose -f compose.mongodb.yaml ps
 
 ### 4. 配置模型，开始创作
 
+本地版本增加了 **ChatGPT 网页授权**：在“设置 → LLM Provider 管理”选择 OpenAI，
+将“登录方式”改为“ChatGPT 网页授权”，点击 **Continue with ChatGPT**，
+在 OpenAI 页面完成登录和套餐使用授权。返回后选择账号，点击“读取可用模型”并选择模型，
+启用 Provider、保存设置，再在小说生成流程配置中选择该 Provider。
+可用模型、套餐资格及额度由 OpenAI 返回；此方式使用官方 Responses API，不读取网页历史对话。
+登录凭据独立保存在本项目的 `user_data/auth/` 中，Windows 使用当前用户的 DPAPI 加密；
+支持重新登录、添加其他账号和退出。当前集成为本地使用，真实模型调用需登录后验证。
+参考：[OpenAI 本地开源应用授权文档](https://developers.openai.com/siwc/token-sharing-open-source)。
+
 在 **设置 → LLM Provider 管理** 中添加服务类型、接口地址、API Key 和模型，启用并保存配置；再到 **小说生成流程配置** 选择全局默认 Provider 并保存。内置流程可直接作为起点，各节点也可单独指定模型。接口必须兼容所选适配器，实际支持的参数以服务商为准，调用费用由服务商计收。
 
 新建小说后，沿左侧**创作进度**准备核心资料、规划卷及参与资料，再细化篇章、场景和章计划。生成结果先审阅再保存；正文也可以直接手写。章后记录可用于核对人物、关系、物品及规则的变化。

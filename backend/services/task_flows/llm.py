@@ -127,7 +127,7 @@ class FlowModels:
 
     def _provider(self, name: str):
         value = self.config.providers.get(name)
-        if value is None or not value.enabled or not value.api_key:
+        if value is None or not value.enabled or not value.has_credentials:
             raise DomainApiError("LLM_PROVIDER_UNAVAILABLE", f"模型服务 {name} 不可用，请检查节点和模型设置", status_code=503)
         return value
 
