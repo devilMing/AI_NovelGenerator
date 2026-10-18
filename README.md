@@ -186,6 +186,8 @@ The interface supports Chinese and English, light and dark themes, and responsiv
 
 ## Backups and upgrades
 
+**Settings → Logs** provides live system/model communication logs (one-second refresh), pause/resume, history filters and request/response/error details. Redacted records are stored in `user_data/runtime_logs/events.sqlite3`, independently of MongoDB, for up to 30 days and 100,000 entries. Payloads are capped at 262,144 characters with a visible truncation notice. Available backend console logs are imported; content that was never logged cannot be recovered. Include this SQLite database in a stopped-service backup, or use SQLite's online backup API while the service is running.
+
 Current `main` is the rewritten application; the previous version is preserved on [`old`](https://github.com/YILING0013/AI_NovelGenerator/tree/old). Their data structures differ, so use separate databases. Book archives now export v14; older application versions cannot read these archives.
 
 | Data | Location |
@@ -204,6 +206,12 @@ The default user directory is `user_data/` under the project. Set `NOVEL_GENERAT
 - **If migration fails:** keep the original files, backups, and migration records, and resolve the reported conflict. Do not delete `user_data` or the database to retry. Generation recovery depends on the original backend process and page; refreshing or restarting does not guarantee recovery, and retrying a model call may incur another charge.
 
 This application is intended for local use and has no public-facing user authentication. The bundled MongoDB has no password and binds only to the loopback address. Do not expose either directly to the internet. AI operations send the necessary story context to your configured model service.
+
+## Local token statistics
+
+Open **System settings → Token usage** for live totals, time filters, per-model/book/volume/task breakdowns and request details linked to communication logs. Each actual model request (including retries and tool follow-ups) has one ledger entry. Streaming usage replaces cumulative counters; missing usage remains unknown. Cache-read and reasoning tokens are subsets, not additional tokens. This is project usage, not ChatGPT plan quota or an official bill.
+
+The durable ledger is `user_data/usage/tokens.sqlite3`, independent of MongoDB and the 30-day communication-log retention. Back it up with the rest of `user_data`; use SQLite's online backup API, or stop the backend before copying the database. On first startup, existing logs are imported conservatively: only known send identifiers are accepted, and a call-level usage fallback requires exactly one send. Missing counts and novel attribution cannot be reconstructed. Statistics are retained until the ledger itself is removed or restored.
 
 ## Feedback and contributions
 

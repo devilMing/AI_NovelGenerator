@@ -22,7 +22,9 @@ export function validateConfig(config: AppConfig, t: TFunc): string | null {
   ) {
     return t("database.required") + ": mongodb_url";
   }
-  if (!config.mongo_database_name?.trim()) {
+  const requiresManagedDatabaseName =
+    config.mongodb_url_configured || config.mongodb_url_update.action === "replace";
+  if (requiresManagedDatabaseName && !config.mongo_database_name?.trim()) {
     return t("database.required") + ": mongo_database_name";
   }
   if (config.mongo_timeout_ms < 0) {

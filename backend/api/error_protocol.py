@@ -21,6 +21,7 @@ from backend.runtime import bind_log_context, log_context, log_exception
 from backend.db.errors import DuplicateKeyError, InvalidIdError, NotFoundError, VersionConflictError
 from backend.llm.exceptions import (
     LLMAuthError,
+    LLMConnectionError,
     LLMDuplicateKeyError,
     LLMError,
     LLMRateLimitError,
@@ -293,6 +294,8 @@ def exception_to_error(
         return 409, "RESOURCE_CONFLICT", str(exc) or "资源冲突", {}, {}
     if isinstance(exc, LLMTimeoutError):
         return 504, "LLM_WORKFLOW_TIMEOUT", "模型请求超时，请重试", {}, {}
+    if isinstance(exc, LLMConnectionError):
+        return 502, "LLM_CONNECTION_INTERRUPTED", "模型连接或响应流中断，未收到完整结果，请重试未完成步骤", {}, {}
     if isinstance(exc, LLMDuplicateKeyError):
         # 只公开专用错误中的模型正文；不读取任意异常的响应、URL 或配置。
         return 502, "LLM_JSON_DUPLICATE_KEY", "模型 JSON 有重复字段，请查看原文并重新生成", {

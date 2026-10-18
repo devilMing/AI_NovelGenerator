@@ -21,6 +21,23 @@ from backend.runtime import is_backend_debug_enabled, log_context, log_exception
 logger = logging.getLogger("llm")
 
 
+def communication(kind, message, payload, **metadata):
+    logger.info(message, extra={"log_kind": kind, "log_payload": payload, "log_metadata": metadata})
+
+
+class StreamChunks(list):
+    """Preserve the existing text buffer while publishing bounded-rate deltas."""
+    def __init__(self, call):
+        super().__init__()
+        self.call = call
+
+    def append(self, text):
+        super().append(text)
+        self.call._deltas.append(text)
+        if perf_counter() - self.call._delta_time >= 1:
+            self.call.flush_deltas()
+
+
 def format_payload(payload: Any) -> str:
     """把日志数据排成可读文本，原样保留正文和字段。
 
@@ -66,13 +83,73 @@ class LLMCall:
         self.http_sequence = 0
         self.last_response: str | None = None
         self.last_response_printed = False
-        self.chunks: list[str] = []
+        self._deltas = []
+        self._delta_time = 0
+        self.chunks: list[str] = StreamChunks(self)
         self.chunk_count = 0
         self.result: LLMResponse | None = None
         self.url = ""
         self.usage: TokenUsage | None = None
         self.finish_reason = ""
         self.parse_input_logged = False
+        self.token_attempts: dict[int, dict] = {}
+
+    def begin_token_attempt(self, sequence, body):
+        from backend.services.token_usage import SCOPES, now, publish
+        # A new send following an unanswered send means the earlier transport failed and retried.
+        for previous in self.token_attempts.values():
+            if previous["status"] == "pending":
+                previous.update(status="failed", updated_at=now())
+                publish(previous)
+        context = log_context.get()
+        scope = {key: str(context[key])[:300] for key in SCOPES if context.get(key)}
+        if active_provider_probe.get() is not None:
+            scope.update(task="provider_test", task_label="接口测试")
+        row = {"attempt_key": f"{self.call_id}:{sequence}", "call_id": self.call_id, "sequence": sequence,
+               "time": now(), "updated_at": now(), "provider": self.provider,
+               "model": str(body.get("model") or self.model) if isinstance(body, dict) else self.model,
+               "task": scope.get("task", ""), "novel_id": scope.get("novel_id", ""), "volume_id": scope.get("volume_id", ""),
+               "scope": scope, "status": "pending", "origin": "live", "operation": self.operation, "usage_final": False}
+        self.token_attempts[sequence] = row
+        publish(row)
+
+    def observe_tokens(self, response, sequence=None):
+        from backend.services.token_usage import extract_usage, field, now, publish
+        sequence = self.http_sequence if sequence is None else sequence
+        row = self.token_attempts.get(sequence)
+        if row is None:
+            return
+        usage = extract_usage(response)
+        wrapped = field(response, "response") or field(response, "message") or field(response, "interaction") or response
+        model = field(wrapped, "model") or field(wrapped, "model_version") or field(wrapped, "modelVersion")
+        changed = any(row.get(key) != value for key, value in usage.items())
+        if isinstance(model, str) and model and row["model"] != model:
+            row["model"] = model; changed = True
+        event_type = field(response, "type", "")
+        native_status = field(wrapped, "status")
+        stop = field(wrapped, "stop_reason") or field(field(response, "delta"), "stop_reason")
+        choices = field(wrapped, "choices", []) or []
+        finishes = [field(item, "finish_reason") for item in choices]
+        candidates = field(wrapped, "candidates", []) or []
+        finishes.extend(str(field(item, "finish_reason")) for item in candidates if field(item, "finish_reason") is not None)
+        terminal = native_status in {"completed", "requires_action"} or event_type == "message_stop" or bool(stop) or any(finishes)
+        terminal |= field(response, "object") == "chat.completion.chunk" and bool(usage)
+        failed = native_status in {"failed", "incomplete", "cancelled"} or event_type in {"error", "response.failed", "response.incomplete"}
+        failed |= stop == "max_tokens" or any(value in {"length", "MAX_TOKENS", "FinishReason.MAX_TOKENS"} for value in finishes)
+        if terminal or failed:
+            row["status"] = "failed" if failed else "completed"; changed = True
+            if usage:
+                row["usage_final"] = True
+        if changed:
+            row.update(usage, updated_at=now())
+            publish(row)
+
+    def finish_token_attempts(self, status):
+        from backend.services.token_usage import now, publish
+        for sequence, row in self.token_attempts.items():
+            if row["status"] == "pending" or sequence == self.http_sequence and status != "completed":
+                row.update(status=status, updated_at=now())
+                publish(row)
 
     def __enter__(self) -> LLMCall:
         """绑定当前调用，使 HTTP 钩子和上层日志使用相同编号。
@@ -84,10 +161,16 @@ class LLMCall:
             当前调用的日志对象。
         """
         self.started = perf_counter()
-        self.context_token = log_context.set({**log_context.get(), "call_id": self.call_id})
+        self.context_token = log_context.set({**log_context.get(), "call_id": self.call_id, "provider": self.provider, "model": self.model})
         self.call_token = _current_call.set(self)
         logger.info("[LLM 调用] provider=%s model=%s operation=%s system_proxy=%s", self.provider, self.model, self.operation, self.use_system_proxy)
         return self
+
+    def flush_deltas(self):
+        if self._deltas:
+            communication("llm_delta", "模型流式输出片段", {"text": "".join(self._deltas)})
+            self._deltas.clear()
+            self._delta_time = perf_counter()
 
     def __exit__(self, _exc_type, error: BaseException | None, _traceback) -> None:
         """记录完成、中断或取消，再恢复上层调用上下文。
@@ -103,6 +186,10 @@ class LLMCall:
         cancelled = isinstance(error, (asyncio.CancelledError, GeneratorExit))
         status = "cancelled" if cancelled else "failed" if error is not None else "completed"
         try:
+            self.flush_deltas()
+            if self.chunks or self.result is not None:
+                communication("llm_response", "模型返回结果", {"status": status, "text": "".join(self.chunks), "result": self.result,
+                    "usage": self.usage or (self.result.usage if self.result is not None else None), "duration_ms": int((perf_counter() - self.started) * 1000)})
             if error is not None and not cancelled:
                 # SDK 可能在返回对象前就解析失败；HTTP 钩子已保存该响应。
                 if self.last_response is not None and not self.last_response_printed:
@@ -124,11 +211,23 @@ class LLMCall:
                 result.finish_reason if result is not None else self.finish_reason,
             )
         finally:
+            self.finish_token_attempts(status)
             _current_call.reset(self.call_token)
             log_context.reset(self.context_token)
 
 
 _current_call: ContextVar[LLMCall] = ContextVar("llm_call")
+
+
+def observe_token_usage(response, sequence=None):
+    """Read native usage at existing SDK observation points, including terminal stream events."""
+    call = _current_call.get(None)
+    if call is not None:
+        try:
+            call.observe_tokens(response, sequence)
+        except Exception:
+            from backend.services.token_usage import collection_failed
+            collection_failed()
 
 
 async def log_http_request(request: httpx.Request) -> None:
@@ -154,6 +253,12 @@ async def log_http_request(request: httpx.Request) -> None:
         call.http_sequence, call.provider, call.model, request.method, request.url,
         request.extensions.get("timeout"),
     )
+    try:
+        body = json.loads(request.content)
+    except (ValueError, UnicodeDecodeError):
+        body = request.content.decode("utf-8", errors="replace")
+    call.begin_token_attempt(call.http_sequence, body)
+    communication("llm_request", "发送模型请求", {"method": request.method, "url": str(request.url), "body": body}, send=call.http_sequence)
     if is_backend_debug_enabled():
         logger.debug("[LLM 实际请求体] send=%d payload=\n%s", call.http_sequence, request.content.decode("utf-8"))
 
@@ -206,6 +311,17 @@ async def log_http_response(response: httpx.Response) -> None:
                 if matches_sent and (explicit_code or re.search(r"^(?:unsupported|invalid) (?:parameter|value)\b", message, re.IGNORECASE)):
                     probe.reasoning_status = "rejected"
     call.last_response = response.text
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+    observe_token_usage(body, sequence)
+    row = call.token_attempts.get(sequence)
+    if row is not None:
+        from backend.services.token_usage import now, publish
+        row.update(status="failed" if response.is_error else "completed", usage_final=True, http_status=response.status_code, updated_at=now())
+        publish(row)
+    communication("llm_response", "收到模型 HTTP 响应", {"status": response.status_code, "body": body}, send=sequence)
     if response.is_error or is_backend_debug_enabled():
         logger.log(
             logging.WARNING if response.is_error else logging.DEBUG,

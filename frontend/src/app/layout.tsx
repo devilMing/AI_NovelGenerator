@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AI Novel Generator",
+  title: "AI NG",
   description: "AI-powered novel generation platform",
 };
 

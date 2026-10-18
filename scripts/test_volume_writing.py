@@ -68,12 +68,16 @@ class VolumeWritingTests(unittest.IsolatedAsyncioTestCase):
         self.manual_edit = False
         self.generator = patch.object(service, "generate_task_flow", self.generate)
         self.generator.start()
+        self.reviewer = patch.object(service, "review_candidate", AsyncMock(return_value={"summary": "测试审校通过", "issues": []}))
+        self.reviewer.start()
 
     async def cleanup(self):
         await service.shutdown()
         await asyncio.sleep(0)
         if hasattr(self, "generator"):
             self.generator.stop()
+        if hasattr(self, "reviewer"):
+            self.reviewer.stop()
         self.assertTrue(self.database.startswith("novel_volume_writing_test_"))
         await self.client.drop_database(self.database)
         await self.client.close()

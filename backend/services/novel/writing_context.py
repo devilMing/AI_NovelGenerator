@@ -674,6 +674,27 @@ async def load_writing_context(task: str, parameters: dict[str, Any], scope: dic
 
     visible_ids = [document["_id"] for document in directories["chapter"].values()
                    if chapter_visible_at_position(document, directories, position)]
+    all_fact_batches = await BaseRepository("chapter_fact_batches").collection.find({
+        "novel_id": ObjectId(request.novel_id), "chapter_id": {"$in": visible_ids}, "status": "confirmed",
+    }, session=session).to_list(length=None)
+    batches_by_chapter: dict[ObjectId, list[dict[str, Any]]] = {}
+    for row in all_fact_batches:
+        batches_by_chapter.setdefault(row["chapter_id"], []).append(row)
+    stale_chapter_ids = [chapter_id for chapter_id, rows in batches_by_chapter.items()
+                         if not any(row["chapter_version"] == directories["chapter"][chapter_id]["version"] for row in rows)]
+    if stale_chapter_ids:
+        raise DomainApiError(
+            "CHAPTER_FACT_RECONCILIATION_REQUIRED",
+            "前文章节在章后事实确认后又被修改，请先重新核对该章事实再继续写作。",
+            status_code=409,
+            details={"chapter_ids": [str(value) for value in stale_chapter_ids]},
+        )
+    fact_batches = [row for row in all_fact_batches
+                    if row["chapter_version"] == directories["chapter"][row["chapter_id"]]["version"]]
+    fact_batches.sort(key=lambda row: writing_order("chapter", directories["chapter"][row["chapter_id"]], directories))
+    from backend.services.novel.chapter_fact_service import public_current_facts
+    confirmed_chapter_facts = public_current_facts(fact_batches)
+    observe("chapter_fact_batches", {**target_scope, "visible_chapter_ids": [str(value) for value in visible_ids]}, confirmed_chapter_facts)
     written = await BaseRepository("chapters").collection.find({"novel_id": ObjectId(request.novel_id), "_id": {"$in": visible_ids}, "is_deleted": False, "content": {"$regex": r"\S"}}, {"content": 0}, session=session).limit(10001).to_list(length=10001)
     prior = [(writing_order("chapter", doc, directories), doc) for doc in written
              if chapter_visible_at_position(doc, directories, position)]
@@ -820,7 +841,7 @@ async def load_writing_context(task: str, parameters: dict[str, Any], scope: dic
                 remember(kind, bodies.get(document["_id"], document))
                 search_results.append(value)
     observe("literal_search", {**target_scope, "text": request.search_text, "range": request.search_scope}, search_results)
-    public = {"position": position, "plan": plans, "neighbors": neighbors, "existing_children": children, "previous_written": previous, "selected_entities": entities, "relations": relations, "volume_states": volume_states, "search_results": search_results, "edit_target": edit_target, "user_guidance": request.user_guidance, "count": request.count, "count_mode": request.count_mode, "target_word_count": request.target_word_count, "truncation": {"previous_excerpt_limit": 6000, "previous_truncated": bool(previous and previous["truncated"])}}
+    public = {"position": position, "plan": plans, "neighbors": neighbors, "existing_children": children, "previous_written": previous, "confirmed_chapter_facts": confirmed_chapter_facts, "selected_entities": entities, "relations": relations, "volume_states": volume_states, "search_results": search_results, "edit_target": edit_target, "user_guidance": request.user_guidance, "count": request.count, "count_mode": request.count_mode, "target_word_count": request.target_word_count, "truncation": {"previous_excerpt_limit": 6000, "previous_truncated": bool(previous and previous["truncated"])}}
     if local_chapter:
         public.update(chapter_scope_content(plans, neighbors))
         public["edit_target"] = {"id": request.target_id, "content": target["content"], "content_semantics": "edit_target"}

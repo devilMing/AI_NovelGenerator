@@ -10,7 +10,7 @@ import { ConfirmActionModal } from "@/components/shared/RelationEditorPrimitives
 import { getImageUrl } from "@/lib/api";
 import type { NovelDetail } from "@/types/novel";
 import ChapterRecordsArchive from "@/components/writing/chapter-records/ChapterRecordsArchive";
-import { ChapterExportChangedError, prepareCompletedChapterExport } from "@/lib/completedChapterExport";
+import { ChapterExportChangedError, prepareCompletedChapterExport, prepareCompletedChaptersZip } from "@/lib/completedChapterExport";
 import { downloadExport } from "@/lib/userExport";
 
 interface NovelDetailPanelProps {
@@ -57,7 +57,7 @@ export default function NovelDetailPanel({
   const [deleteError, setDeleteError] = useState("");
   const [recordsOpen, setRecordsOpen] = useState(false);
   const exportBusy = useRef(false);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<"txt" | "zip" | null>(null);
   const [exportNotice, setExportNotice] = useState<{ novelId: string; message: string; error: boolean } | null>(null);
 
   if (loading || !novel) {
@@ -118,18 +118,21 @@ export default function NovelDetailPanel({
   const goWriting = () => {
     router.push(`/${locale}/writing/${novel.id}`);
   };
-  const exportCompletedChapters = async () => {
+  const exportCompletedChapters = async (format: "txt" | "zip") => {
     if (exportBusy.current) return;
     exportBusy.current = true;
-    setExporting(true);
+    setExporting(format);
     setExportNotice(null);
     try {
-      const result = await prepareCompletedChapterExport(novel.id, novel.title, intlLocale);
+      const result = format === "zip"
+        ? await prepareCompletedChaptersZip(novel.id, novel.title, intlLocale)
+        : await prepareCompletedChapterExport(novel.id, novel.title, intlLocale);
       if (!result) {
         setExportNotice({ novelId: novel.id, message: tb("exportCompletedEmpty"), error: false });
         return;
       }
-      const url = URL.createObjectURL(new Blob(["\uFEFF", result.text], { type: "text/plain;charset=utf-8" }));
+      const blob = "blob" in result ? result.blob : new Blob(["\uFEFF", result.text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
       try {
         const link = document.createElement("a");
         link.href = url;
@@ -139,13 +142,13 @@ export default function NovelDetailPanel({
         // 给浏览器时间启动下载，项目内副本由现有导出工具保存。
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       }
-      setExportNotice({ novelId: novel.id, message: tb("exportCompletedSuccess", { count: result.chapterCount }), error: false });
+      setExportNotice({ novelId: novel.id, message: tb(format === "zip" ? "exportChaptersZipSuccess" : "exportCompletedSuccess", { count: result.chapterCount }), error: false });
     } catch (error) {
       setExportNotice({ novelId: novel.id, error: true, message: error instanceof ChapterExportChangedError
         ? tb("exportCompletedChanged") : tb("exportCompletedFailed") });
     } finally {
       exportBusy.current = false;
-      setExporting(false);
+      setExporting(null);
     }
   };
   const hasNarrative = PREVIEW_LONG_FIELDS.some(({ key }) => novel[key]);
@@ -160,7 +163,7 @@ export default function NovelDetailPanel({
         {tb("backToList")}
       </Button>
 
-      <header className="flex flex-col gap-4 @[720px]/book:flex-row @[720px]/book:items-start @[720px]/book:justify-between">
+      <header className="flex flex-col gap-4 @[1100px]/book:flex-row @[1100px]/book:items-start @[1100px]/book:justify-between">
         <div className="flex min-w-0 flex-1 items-start gap-4">
           {novel.cover_image ? (
             <img
@@ -195,7 +198,7 @@ export default function NovelDetailPanel({
           </div>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 @[1100px]/book:max-w-[60%] @[1100px]/book:justify-end">
           <Button variant="primary" size="sm" onPress={goWriting} className="bg-accent text-accent-foreground hover:bg-accent-hover">
             {tb("goWriting")}
           </Button>
@@ -203,10 +206,16 @@ export default function NovelDetailPanel({
             {tb("viewChapterRecords")}
           </Button>
           <span className="inline-flex" title={tb("exportCompletedHint")}>
-          <Button variant="outline" size="sm" isDisabled={exporting} onPress={() => void exportCompletedChapters()}>
+          <Button variant="outline" size="sm" isDisabled={exporting !== null} onPress={() => void exportCompletedChapters("txt")}>
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4" /></svg>
-            {tb(exporting ? "exportCompletedLoading" : "exportCompletedTxt")}
+            {tb(exporting === "txt" ? "exportCompletedLoading" : "exportCompletedTxt")}
           </Button>
+          </span>
+          <span className="inline-flex" title={tb("exportChaptersZipHint")}>
+            <Button variant="outline" size="sm" isDisabled={exporting !== null} onPress={() => void exportCompletedChapters("zip")}>
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16v16H4zM10 4v4h4v4h-4v4h4v4" /></svg>
+              {tb(exporting === "zip" ? "exportCompletedLoading" : "exportChaptersZip")}
+            </Button>
           </span>
           <SectionActionButton action="trash" label={t("delete")} variant="ghost" size="sm" className="text-red-700 hover:bg-red-500/10 dark:text-red-300" onPress={() => setConfirmingDelete(true)} />
         </div>

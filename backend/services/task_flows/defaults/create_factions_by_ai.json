@@ -13,7 +13,7 @@
       "inputs": {},
       "outputs": {
         "faction_count": {
-          "default": 3,
+          "default": null,
           "maximum": 6,
           "minimum": 1,
           "title": "Faction Count",

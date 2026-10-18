@@ -213,7 +213,9 @@ async def task_flow_events(task: str, flow: Flow, run: GraphRunRequest, models: 
     Yields:
         原接口 SSE 所需的节点进度、错误或单一完成事件。
     """
-    with bind_log_context(task=task, flow_id=flow.id):
+    from backend.services.token_usage import resolve_scope
+    usage_scope = await resolve_scope(run.scope)
+    with bind_log_context(task=task, task_label=TASKS[task].label, flow_id=flow.id, **usage_scope):
         chapter_version = next((node.config.get("chapter_context_version") for node in flow.nodes if node.type == "agent" and node.config.get("chapter_context_version")), None)
         if chapter_version:
             run.scope["chapter_context_version"] = chapter_version

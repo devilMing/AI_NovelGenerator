@@ -591,7 +591,7 @@ async def confirm_item_facts(novel_id: str, data: dict, *, idempotency_key: str,
     return await save(session) if session is not None else await run_mongo_write_unit(save, "confirm_item_facts", require_transaction=True)
 
 
-async def preview_item_fact_batch(novel_id: str, data: dict) -> dict:
+async def preview_item_fact_batch(novel_id: str, data: dict, *, session=None) -> dict:
     """为原AI整批候选准备明确起点，不保存任何一件物品。
 
     Args:
@@ -622,6 +622,8 @@ async def preview_item_fact_batch(novel_id: str, data: dict) -> dict:
             entries.append({"candidate_ref": candidate.candidate_ref, "preview": preview, "after": after})
         return {"generation": request.generation.model_dump(mode="json"), "entries": entries}
 
+    if session is not None:
+        return await prepare(session)
     return await run_mongo_write_unit(prepare, "preview_item_fact_batch", require_transaction=True)
 
 

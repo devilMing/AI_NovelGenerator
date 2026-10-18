@@ -197,6 +197,7 @@ def build_uvicorn_log_config() -> dict[str, Any]:
             "context": {"()": "backend.runtime.LogContextFilter"},
         },
         "handlers": {
+            "persistent": {"class": "backend.services.runtime_logs.RuntimeLogHandler"},
             "default": {
                 "class": "logging.StreamHandler",
                 "formatter": "default",
@@ -210,37 +211,37 @@ def build_uvicorn_log_config() -> dict[str, Any]:
             },
         },
         "root": {
-            "handlers": ["default"],
+            "handlers": ["default", "persistent"],
             "level": "WARNING",
         },
         "loggers": {
             "main": {
-                "handlers": ["default"],
+                "handlers": ["default", "persistent"],
                 "level": app_log_level,
                 "propagate": False,
             },
             "backend": {
-                "handlers": ["default"],
+                "handlers": ["default", "persistent"],
                 "level": app_log_level,
                 "propagate": False,
             },
             "llm": {
-                "handlers": ["default"],
+                "handlers": ["default", "persistent"],
                 "level": app_log_level,
                 "propagate": False,
             },
             "uvicorn": {
-                "handlers": ["default"],
+                "handlers": ["default", "persistent"],
                 "level": "INFO",
                 "propagate": False,
             },
             "uvicorn.error": {
-                "handlers": ["default"],
+                "handlers": ["default", "persistent"],
                 "level": "INFO",
                 "propagate": False,
             },
             "uvicorn.access": {
-                "handlers": ["access"],
+                "handlers": ["access", "persistent"],
                 "level": "INFO",
                 "propagate": False,
             },

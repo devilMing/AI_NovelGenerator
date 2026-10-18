@@ -13,7 +13,7 @@
       "inputs": {},
       "outputs": {
         "item_count": {
-          "default": 6,
+          "default": null,
           "maximum": 20,
           "minimum": 1,
           "title": "Item Count",

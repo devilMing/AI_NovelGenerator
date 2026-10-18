@@ -18,7 +18,7 @@ from backend.services.novel.faction_fact_contract import FactionFactReadV1
 class WritingReadV1(StrictRequestModel):
     """一种固定语义的内容读取，包括空查询。"""
 
-    kind: Literal["parent_chain", "children", "neighbors", "previous_written", "selected_entities", "selected_relations", "volume_states", "literal_search", "edit_target", "plot_sources", "volume_participants", "reading_position"]
+    kind: Literal["parent_chain", "children", "neighbors", "previous_written", "selected_entities", "selected_relations", "volume_states", "literal_search", "edit_target", "plot_sources", "volume_participants", "reading_position", "chapter_fact_batches"]
     scope: dict[str, Any]
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 

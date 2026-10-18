@@ -25,6 +25,7 @@ import { CREATE_NOVEL_CONTEXT_FIELDS } from "@/lib/novelFields";
 import NovelInfoSection, { type SectionKey } from "./NovelInfoSection";
 import NovelRewriteAssistant from "./NovelRewriteAssistant";
 import StickyActionBar from "./StickyActionBar";
+import FirstChapterWriting from "./FirstChapterWriting";
 
 const SECTIONS: SectionKey[] = ["basic", "creative", "content", "style"];
 
@@ -386,6 +387,7 @@ export default function NovelInfoWorkspace({
                 </div>
               </div>
             )}
+            {mode === "edit" && novelId && <FirstChapterWriting novelId={novelId} disabled={loading || loadError || editingSection !== null || coverUploading || creating} onSaved={onFormalFactsChanged} />}
             <Button
               ref={rewriteButtonRef}
               variant={rewriteOpen ? "primary" : "outline"}

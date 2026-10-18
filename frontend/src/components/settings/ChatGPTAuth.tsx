@@ -5,7 +5,7 @@ import { useLocale } from "next-intl";
 import { Button } from "@heroui/react";
 import { apiGet, apiPost } from "@/lib/api";
 import type { ProviderConfig } from "@/types/config";
-import { getChatGPTReasoningProfile } from "@/lib/chatgptReasoning";
+import { getChatGPTModelOptions, getChatGPTReasoningProfile } from "@/lib/chatgptReasoning";
 
 type Account = { id: string; label: string; connected: boolean; plan_enabled: boolean };
 type AuthStatus = { accounts: Account[]; status: string; message: string };
@@ -22,10 +22,10 @@ export function ChatGPTAuth({ provider, onChange }: {
   const [notice, setNotice] = useState("");
   const enabled = provider.auth_mode === "chatgpt";
   const selected = auth.accounts.find((a) => a.id === provider.chatgpt_account_id);
+  const canLoadModels = Boolean(selected?.connected && selected.plan_enabled);
   const reasoning = getChatGPTReasoningProfile(provider.default_model);
   const effortNames = zh ? { none: "不推理", minimal: "极低", low: "低", medium: "中等", high: "高", xhigh: "超高", max: "最高" } : { none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum" };
-  const modelOptions = provider.default_model && !models.some((m) => m.id === provider.default_model)
-    ? [{ id: provider.default_model, name: provider.default_model }, ...models] : models;
+  const modelOptions = getChatGPTModelOptions(provider.default_model, models);
   const selectClass = "w-full min-h-11 rounded-xl border border-border bg-background px-3 text-sm text-foreground";
 
   async function refresh() {
@@ -103,6 +103,41 @@ export function ChatGPTAuth({ provider, onChange }: {
     </label>
     {enabled && <>
       <p className="text-xs leading-5 text-muted">{zh ? "在 OpenAI 页面登录并授权使用 ChatGPT 套餐，无需填写 API Key。可用模型与额度以你的账号为准；不会读取 ChatGPT 历史对话。" : "Sign in on OpenAI and authorize eligible ChatGPT plan usage. No API key is needed. Models and usage depend on your account; chat history is not accessed."}</p>
+      <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold">{zh ? "模型与推理" : "Model and reasoning"}</p>
+            <p className="mt-0.5 text-xs text-muted">{zh ? "为此 Provider 设置默认模型和推理强度" : "Set the default model and reasoning effort for this provider"}</p>
+          </div>
+          <Button size="sm" variant="outline" isDisabled={busy || loadingModels || !canLoadModels} onPress={() => { void loadModels(); }}>
+            {loadingModels ? (zh ? "正在读取…" : "Loading…") : (zh ? "读取可用模型" : "Load models")}
+          </Button>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="block space-y-2 text-sm">
+            <span className="font-medium">{zh ? "选择模型" : "Choose model"}</span>
+            <select aria-label={zh ? "选择模型" : "Choose model"} className={selectClass} value={provider.default_model} disabled={loadingModels} onChange={(e) => {
+              const model = e.target.value;
+              const profile = getChatGPTReasoningProfile(model);
+              onChange({ default_model: model, ...(provider.reasoning_effort && !profile.efforts.includes(provider.reasoning_effort) ? { reasoning_effort: null } : {}) });
+            }}>
+              <option value="">{zh ? "请选择" : "Select a model"}</option>
+              {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+            </select>
+          </label>
+          <label className="block space-y-2 text-sm">
+            <span className="font-medium">{zh ? "推理强度" : "Reasoning effort"}</span>
+            <select aria-label={zh ? "推理强度" : "Reasoning effort"} className={selectClass} value={provider.reasoning_effort ?? "default"} onChange={(e) => onChange({ reasoning_effort: e.target.value === "default" ? null : e.target.value as ProviderConfig["reasoning_effort"] })}>
+              <option value="default">{zh ? "模型默认" : "Model default"}{reasoning.defaultEffort ? `（${effortNames[reasoning.defaultEffort]} / ${reasoning.defaultEffort}）` : ""}</option>
+              {[...new Set([...reasoning.efforts, ...(provider.reasoning_effort ? [provider.reasoning_effort] : [])])].map((effort) => <option key={effort} value={effort}>{effortNames[effort]} / {effort}</option>)}
+            </select>
+          </label>
+        </div>
+        <p className="text-xs leading-5 text-muted">{canLoadModels
+          ? (zh ? "已连接账号，可读取账号实际可用模型。推理强度越高，通常等待时间与用量也越高。" : "The account is connected. Load its available models here. Higher reasoning effort usually increases latency and usage.")
+          : (zh ? "完成授权并选择账号后，可读取该账号的可用模型；当前会保留已配置模型。" : "Sign in and select an account to load its available models. The configured model remains available meanwhile.")}</p>
+        {!reasoning.defaultEffort && <p className="text-xs text-muted">{zh ? "此模型的默认档位和支持范围以服务端为准；不确定时保留“模型默认”。" : "Supported efforts and defaults depend on the model; keep Model default when unsure."}</p>}
+      </div>
       <label className="block space-y-2 text-sm">
         <span>{zh ? "ChatGPT 账号" : "ChatGPT account"}</span>
         <select className={selectClass} value={provider.chatgpt_account_id || ""} onChange={(e) => onChange({ chatgpt_account_id: e.target.value })}>
@@ -119,23 +154,7 @@ export function ChatGPTAuth({ provider, onChange }: {
       </div>
       {auth.status === "pending" && <p role="status" className="text-sm text-muted">{zh ? "等待浏览器授权，完成后请在上方选择账号。" : "Waiting for browser authorization. Select the account above when complete."}</p>}
       {auth.status !== "pending" && auth.message && !selected?.connected && <p role="status" className="text-sm text-muted">{auth.message}</p>}
-      {selected?.connected && selected.plan_enabled && <div className="space-y-2 border-t border-border pt-3">
-        <Button size="sm" variant="outline" isDisabled={busy || loadingModels} onPress={() => { void loadModels(); }}>{loadingModels ? (zh ? "正在读取模型…" : "Loading models…") : (zh ? "刷新可用模型" : "Refresh models")}</Button>
-        <label className="block space-y-2 text-sm"><span>{zh ? "选择模型" : "Choose model"}</span><select aria-label={zh ? "选择模型" : "Choose model"} className={selectClass} value={provider.default_model} onChange={(e) => {
-          const model = e.target.value;
-          const profile = getChatGPTReasoningProfile(model);
-          onChange({ default_model: model, ...(provider.reasoning_effort && !profile.efforts.includes(provider.reasoning_effort) ? { reasoning_effort: null } : {}) });
-        }}><option value="">{zh ? "请选择" : "Select a model"}</option>{modelOptions.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
-        <label className="block space-y-2 pt-2 text-sm"><span className="font-medium">{zh ? "模型推理强度" : "Reasoning effort"}</span>
-          <select aria-label={zh ? "模型推理强度" : "Reasoning effort"} className={selectClass} value={provider.reasoning_effort ?? "default"} onChange={(e) => onChange({ reasoning_effort: e.target.value === "default" ? null : e.target.value as ProviderConfig["reasoning_effort"] })}>
-            <option value="default">{zh ? "模型默认" : "Model default"}{reasoning.defaultEffort ? `（${effortNames[reasoning.defaultEffort]} / ${reasoning.defaultEffort}）` : ""}</option>
-            {[...new Set([...reasoning.efforts, ...(provider.reasoning_effort ? [provider.reasoning_effort] : [])])].map((effort) => <option key={effort} value={effort}>{effortNames[effort]} / {effort}</option>)}
-          </select>
-        </label>
-        <p className="text-xs leading-5 text-muted">{zh ? "强度越高，通常思考更充分，也会增加等待时间与用量。这里设置 Provider 默认值；流程节点或单次请求显式设置的推理参数优先。" : "Higher effort usually means more reasoning, latency, and usage. This sets the provider default; explicit workflow or request settings take priority."}</p>
-        {!reasoning.defaultEffort && <p className="text-xs text-muted">{zh ? "此模型的默认档位和支持范围以服务端为准；不确定时保留“模型默认”。" : "Supported efforts and defaults depend on the model; keep Model default when unsure."}</p>}
-        <p className="text-xs text-muted">{zh ? "账号授权已保存在本项目，无需重复登录。保存设置后，登录方式、账号、模型与推理强度将在刷新或重启后恢复。" : "Authorization is stored for this project. Save settings to retain the authentication method, account, model, and effort across reloads and restarts."}</p>
-      </div>}
+      {selected?.connected && selected.plan_enabled && <p className="border-t border-border pt-3 text-xs text-muted">{zh ? "账号授权已保存在本项目，无需重复登录。保存设置后，登录方式、账号、模型与推理强度将在刷新或重启后恢复。" : "Authorization is stored for this project. Save settings to retain the authentication method, account, model, and effort across reloads and restarts."}</p>}
       <p className="text-xs text-muted">{zh ? "选好账号和模型后，启用 Provider 并点击设置页右上角保存。" : "Select an account and model, enable this provider, then save settings."}</p>
     </>}
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
