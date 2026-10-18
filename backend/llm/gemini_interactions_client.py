@@ -17,7 +17,7 @@ from backend.llm.exceptions import LLMConnectionError
 from backend.llm.exceptions import LLMAuthError, LLMError, LLMRateLimitError, LLMResponseError, LLMSchemaError, LLMTimeoutError
 from backend.llm.gemini_client import GeminiClient, build_gemini_generation_config
 from backend.llm.provider_probe import observe_provider_response
-from backend.llm.logger import LLMCall
+from backend.llm.logger import LLMCall, communication
 from backend.llm.json_guard import reject_duplicate_json_keys
 from backend.llm.models import LLMFunctionCallProbe, LLMRequest, LLMResponse, LLMToolCall, LLMToolDefinition, LLMToolResult, LLMToolTurn, TokenUsage
 
@@ -95,6 +95,7 @@ class GeminiInteractionsClient(GeminiClient):
         Returns:
             含完整步骤、工具参数和思考签名的 SDK 响应。
         """
+        communication("llm_request", "发送 Gemini Interactions 请求", {"body": params, "stream": stream})
         if not stream:
             return await self._client.aio.interactions.create(**params)
         response = None

@@ -129,7 +129,7 @@ async def execute_flow(
             node = nodes[node_id]
             path = f"{prefix}/{node.id}"
             current.update(node_id=node.id, instance_path=path)
-            with bind_log_context(flow_id=flow.id, node_id=node.id, instance_path=path):
+            with bind_log_context(flow_id=flow.id, node_id=node.id, node_label=node.label or node.id, instance_path=path):
                 node_started = time.perf_counter()
                 metadata = {"node_id": node.id, "instance_path": path, "label": node.label or node.id}
                 if trace:

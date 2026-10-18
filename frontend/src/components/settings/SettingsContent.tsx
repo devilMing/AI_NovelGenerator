@@ -9,11 +9,13 @@ import { DatabaseCard } from "@/components/settings/DatabaseCard";
 import { ProviderCard } from "@/components/settings/ProviderCard";
 import { WorkflowCard } from "@/components/settings/WorkflowCard";
 import { ThemeCard } from "@/components/settings/ThemeCard";
+import { RuntimeLogs } from "@/components/settings/RuntimeLogs";
+import { TokenUsage } from "@/components/settings/TokenUsage";
 import { validateConfig } from "@/lib/validation";
 import type { AppConfig } from "@/types/config";
 import { useRouter, usePathname } from "next/navigation";
 
-type SettingsSection = "theme" | "database" | "provider" | "workflow";
+type SettingsSection = "theme" | "database" | "provider" | "workflow" | "logs" | "usage";
 
 const NAV_ITEMS: { key: SettingsSection; icon: React.ReactNode }[] = [
   {
@@ -57,6 +59,8 @@ const NAV_ITEMS: { key: SettingsSection; icon: React.ReactNode }[] = [
       </svg>
     ),
   },
+  { key: "logs", icon: <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" /></svg> },
+  { key: "usage", icon: <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 3v17h17M8 16v-5m5 5V6m5 10V9" /></svg> },
 ];
 
 interface SettingsContentProps {
@@ -74,6 +78,9 @@ export default function SettingsContent({
   const currentLocale = pathname.startsWith("/en") ? "en" : "zh";
   const isModal = presentation === "modal";
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+  const [logRefresh, setLogRefresh] = useState(0);
+  const [logQuery, setLogQuery] = useState("");
+  const isReadOnly = activeSection === "logs" || activeSection === "usage";
   const [secretEditorOpen, setSecretEditorOpen] = useState(false);
   const [localMessage, setLocalMessage] = useState<{
     tone: "error" | "success";
@@ -116,6 +123,7 @@ export default function SettingsContent({
   };
 
   const handleReload = async () => {
+    if (isReadOnly) { setLogRefresh((value) => value + 1); return; }
     clearMessages();
     setLocalMessage(null);
     const result = await fetchConfig();
@@ -169,12 +177,14 @@ export default function SettingsContent({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <SectionActionButton action="refresh" label={t("reload")} onPress={handleReload} isDisabled={saving || secretEditorOpen} />
-        <SectionActionButton action="save" label={t(saving ? "saving" : "save")} onPress={handleSave} isPending={saving} isDisabled={saving || !config || secretEditorOpen} />
+        <SectionActionButton action="save" label={t(saving ? "saving" : "save")} onPress={handleSave} isPending={saving} isDisabled={isReadOnly || saving || !config || secretEditorOpen} />
       </div>
     </div>
   );
 
   const renderSectionContent = () => {
+    if (activeSection === "logs") return <RuntimeLogs key={logQuery} refreshKey={logRefresh} initialQuery={logQuery} />;
+    if (activeSection === "usage") return <TokenUsage refreshKey={logRefresh} onOpenLogs={(callId) => { setLogQuery(callId); setActiveSection("logs"); }} />;
     if (!config) return null;
     switch (activeSection) {
       case "theme":
@@ -201,7 +211,7 @@ export default function SettingsContent({
     }
   };
 
-  const sectionUsesInternalScroll = activeSection === "provider" || activeSection === "workflow";
+  const sectionUsesInternalScroll = activeSection === "provider" || activeSection === "workflow" || isReadOnly;
 
   const sidebar = (
     <nav
@@ -215,6 +225,7 @@ export default function SettingsContent({
           key={item.key}
           onClick={() => {
             setSecretEditorOpen(false);
+            if (item.key === "logs") setLogQuery("");
             setActiveSection(item.key);
           }}
           aria-current={activeSection === item.key ? "page" : undefined}
@@ -251,11 +262,11 @@ export default function SettingsContent({
     </>
   );
 
-  const body = loading && activeSection !== "theme" ? (
+  const body = loading && activeSection !== "theme" && !isReadOnly ? (
     <div className="flex min-h-0 flex-1 items-center justify-center" role="status">
       <div className="text-muted">{t("loading")}</div>
     </div>
-  ) : !config && activeSection !== "theme" ? (
+  ) : !config && activeSection !== "theme" && !isReadOnly ? (
     <div className="flex min-h-0 flex-1 items-center justify-center">
       <div className="text-muted">{error || t("loadFailed")}</div>
     </div>
@@ -298,7 +309,7 @@ export default function SettingsContent({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <SectionActionButton action="refresh" label={t("reload")} onPress={handleReload} isDisabled={saving || secretEditorOpen} />
-                <SectionActionButton action="save" label={t(saving ? "saving" : "save")} onPress={handleSave} isPending={saving} isDisabled={saving || !config || secretEditorOpen} />
+                <SectionActionButton action="save" label={t(saving ? "saving" : "save")} onPress={handleSave} isPending={saving} isDisabled={isReadOnly || saving || !config || secretEditorOpen} />
                 <Modal.CloseTrigger aria-label={t("back")} isDisabled={saving} />
               </div>
             </Modal.Header>

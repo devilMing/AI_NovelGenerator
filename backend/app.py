@@ -117,6 +117,18 @@ async def lifespan(app: FastAPI):
     )
     for notice in prepare_files():
         logger.warning(notice)
+    from backend.services.runtime_logs import get_store
+    import asyncio
+    try:
+        await asyncio.to_thread(get_store().import_legacy, USER_DATA_DIR / "runtime_logs")
+    except Exception:
+        logger.warning("历史日志暂时无法导入；日志查询页将显示存储错误。", exc_info=True)
+    from backend.services.token_usage import get_store as get_usage_store
+    try:
+        await asyncio.to_thread(get_store().flush)
+        await asyncio.to_thread(get_usage_store().import_history, get_store().path)
+    except Exception:
+        logger.warning("历史 Token 用量暂时无法导入。", exc_info=True)
     with storage_lock(USER_DATA_DIR / "migrations/service.lock"):
         try:
             for task in TASKS:
@@ -138,6 +150,11 @@ async def lifespan(app: FastAPI):
             await shutdown_volume_writing()
             await close_mongo_connection()
     logger.info("Backend shutdown completed.")
+    try:
+        await asyncio.to_thread(get_store().flush)
+        await asyncio.to_thread(get_usage_store().flush)
+    except Exception:
+        pass
 
 COMMON_ERROR_RESPONSES = {
     status_code: {"model": ApiErrorResponse}
@@ -162,7 +179,7 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 async def require_database(request: Request, call_next):
     """没有数据库时只开放设置及导出；业务接口不能绕过首次检查。"""
     from backend.db import mongo
-    allowed = request.url.path in {"/api/startup", "/api/config", "/api/exports"} or request.url.path.startswith("/api/config/")
+    allowed = request.url.path in {"/api/startup", "/api/config", "/api/exports"} or request.url.path.startswith(("/api/config/", "/api/runtime/"))
     if getattr(app.state, "startup_checked", False) and mongo.client is None and request.url.path.startswith("/api/") and not allowed and request.method != "OPTIONS":
         return JSONResponse(status_code=503, content={"error": {"code": "DATABASE_SETUP_REQUIRED", "message": "请先在设置中配置数据库。"}})
     return await call_next(request)
@@ -224,6 +241,8 @@ app.include_router(config_router)
 from backend.api.default_routers.chatgpt_auth_router import router as chatgpt_auth_router
 app.include_router(chatgpt_auth_router)
 app.include_router(runtime_router)
+from backend.api.default_routers.token_usage_router import router as token_usage_router
+app.include_router(token_usage_router)
 app.include_router(task_flow_router)
 app.include_router(assistant_router)
 app.include_router(create_novel_router)

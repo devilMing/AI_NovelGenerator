@@ -1,4 +1,4 @@
-"""仅在 Provider 设置页测试期间收集参数和推理证据，不保留响应正文。"""
+"""记录原生 Token 用量，并在 Provider 测试期间收集参数及推理证据。"""
 
 from contextvars import ContextVar
 from typing import Any, Literal
@@ -77,6 +77,8 @@ def observe_provider_response(response: Any, api_mode: str) -> None:
     Returns:
         无；不保存思考正文、签名或加密状态内容。
     """
+    from backend.llm.logger import observe_token_usage
+    observe_token_usage(response)
     probe = active_provider_probe.get()
     if probe is None:
         return
