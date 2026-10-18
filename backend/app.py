@@ -134,6 +134,8 @@ async def lifespan(app: FastAPI):
             logger.info("Backend startup completed.")
             yield
         finally:
+            from backend.services.novel.volume_writing_service import shutdown as shutdown_volume_writing
+            await shutdown_volume_writing()
             await close_mongo_connection()
     logger.info("Backend shutdown completed.")
 
@@ -194,6 +196,10 @@ app.include_router(arc_router)
 app.include_router(scene_router)
 app.include_router(chapter_router)
 app.include_router(writing_router)
+from backend.api.default_routers.volume_writing_router import router as volume_writing_router
+from backend.api.default_routers.volume_writing_router import overview_router as volume_writing_overview_router
+app.include_router(volume_writing_router)
+app.include_router(volume_writing_overview_router)
 app.include_router(plot_router)
 app.include_router(faction_router)
 app.include_router(faction_fact_router)

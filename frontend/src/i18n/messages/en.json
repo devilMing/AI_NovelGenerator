@@ -931,6 +931,48 @@
     }
   },
   "writing": {
+    "volumeWriting": {
+      "monitor": {
+        "title": "Background writing task", "details": "Details / logs",
+        "state": { "running": "Running in background", "pausing": "Pausing…", "ending": "Ending…", "paused": "Paused", "failed": "Failed; retry available", "completed": "Completed", "cancelled": "Run ended", "unknown": "Status unavailable" },
+        "progress": "Scenes {scenes}/{total} · Written this run {written} · Existing chapters skipped {skipped}",
+        "connectionLost": "Status connection lost; reconnecting. The last progress does not confirm that the job is still running.",
+        "lastUpdate": "Last update: {time}."
+      },
+      "logs": {
+        "title": "Execution log", "show": "View log", "hide": "Hide log",
+        "hint": "Newest steps first, updated every 2 seconds. Expand a step for duration, output and errors. Logs and retry attempts are saved with the job.",
+        "legacy": "This job predates logging. Only retained cached steps and its final state are available. New jobs record all steps. Newest steps first.",
+        "loading": "Loading logs…", "empty": "No steps yet. Logs appear as the job runs.",
+        "readFailed": "Could not read logs. Check your connection.", "older": "Load earlier steps",
+        "truncated": "Showing the first 16,000 characters of this output. Saved chapter text is unaffected."
+      },
+      "title": "Write volume",
+      "description": "Process every existing arc and scene in this volume in reading order. Generate and save missing chapter plans, then write and save each empty chapter. Chapters with saved text are skipped.",
+      "counts": { "scenes": "Scenes", "written": "Already written", "missing_plans": "Missing plans", "pending_bodies": "Chapters to write" },
+      "status": { "running": "Writing volume", "paused": "Paused; ready to continue", "failed": "Stopped with progress preserved", "completed": "All existing scenes in this volume are written", "cancelled": "Run ended; saved chapters preserved" },
+      "stage": { "planning": "Generating chapter plans", "writing": "Writing chapter", "saving": "Saving and verifying" },
+      "progress": "Scenes {scenes}/{total} · Plans added {plans} · Chapters written {written} · Existing chapters skipped {skipped}",
+      "sceneProgress": "Completed scenes",
+      "guidance": "Volume writing instructions (optional)",
+      "defaults": "Uses the current default planning and writing workflows, with revisions pinned for this run. Models and reasoning use system settings unless overridden below. Scenes without a chapter target keep existing plans, or receive one plan if empty.",
+      "recovery": "The backend keeps working when you close this panel or refresh. Pause waits for the current model call and keeps its result. Errors stop at the current step. Progress can be resumed after a server restart; unfinished model calls may need to be requested again.",
+      "candidateKept": "This step's generated result is saved. Continuing verifies its save before proceeding.",
+      "stopping": "Stop requested. Waiting for the current model call; no further steps will start.",
+      "dirty": "Save or resolve unsaved changes before starting or resuming volume writing.",
+      "loading": "Checking the volume…",
+      "readFailed": "Could not read task status. Check your connection.",
+      "actionFailed": "The action failed. Please retry.",
+      "start": "Start writing and saving volume",
+      "pause": "Pause",
+      "resume": "Continue / retry current step",
+      "end": "End run",
+      "endConfirm": "End this run? Saved chapter plans and text will be preserved.",
+      "confirmEnd": "Confirm end",
+      "keepTask": "Keep run",
+      "close": "Close",
+      "closeRunning": "Close panel; keep writing"
+    },
     "pageTitle": "Writing Desk",
     "backToShelf": "Back to Bookshelf",
     "listLayout": {
@@ -3596,6 +3638,7 @@
       }
     },
     "hierarchy": {
+      "volumeWritingButton": "Write volume",
       "generationWorkspace": "Generation progress and candidate review",
       "prepareVolume": "Prepare volume",
       "completeVolume": "Complete volume in Volume planning",

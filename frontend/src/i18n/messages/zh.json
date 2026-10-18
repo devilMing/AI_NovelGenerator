@@ -931,6 +931,48 @@
     }
   },
   "writing": {
+    "volumeWriting": {
+      "monitor": {
+        "title": "后台写作任务", "details": "查看详情 / 日志",
+        "state": { "running": "后台执行中", "pausing": "正在暂停…", "ending": "正在结束…", "paused": "已暂停", "failed": "执行失败，可重试", "completed": "已完成", "cancelled": "本轮已结束", "unknown": "状态暂时无法确认" },
+        "progress": "场景 {scenes}/{total} · 本轮已写 {written} 章 · 跳过已有正文 {skipped} 章",
+        "connectionLost": "状态连接异常，正在重连；上次进度不代表任务仍在执行。",
+        "lastUpdate": "上次更新：{time}。"
+      },
+      "logs": {
+        "title": "执行日志", "show": "查看日志", "hide": "收起日志",
+        "hint": "最新步骤在前，每 2 秒更新；点击步骤查看耗时、输出和错误。日志随任务保存，重试记录也会保留。",
+        "legacy": "这是更新前的任务，仅能查看当时保留的缓存步骤和最终状态；新任务会记录完整步骤。最新步骤在前。",
+        "loading": "正在读取日志…", "empty": "暂无步骤日志，任务执行后会自动显示。",
+        "readFailed": "日志读取失败，请检查连接。", "older": "加载更早的步骤",
+        "truncated": "输出较长，此处仅展示前 16,000 字符；已保存的正文不受影响。"
+      },
+      "title": "逐卷写作",
+      "description": "按本卷所有篇章、场景的顺序，补齐并自动保存缺少的章计划，再逐章生成并保存正文。已有非空正文自动跳过，不会重新编写。",
+      "counts": { "scenes": "本卷场景", "written": "已有正文", "missing_plans": "待补章计划", "pending_bodies": "待写正文" },
+      "status": { "running": "正在逐卷写作", "paused": "已暂停，可继续", "failed": "遇到问题，进度已保留", "completed": "本卷现有场景已全部写完", "cancelled": "本轮已结束，已保存章节保留" },
+      "stage": { "planning": "生成章计划", "writing": "生成正文", "saving": "保存并核对" },
+      "progress": "场景 {scenes}/{total} · 本轮新增计划 {plans} 章 · 写入正文 {written} 章 · 跳过已有正文 {skipped} 章",
+      "sceneProgress": "场景完成进度",
+      "guidance": "整卷写作要求（可选）",
+      "defaults": "使用当前默认的章计划与正文流程，并固定本轮流程修订。模型和推理参数沿用系统设置，可在生成参数中覆盖。场景没有目标章数时，保留已有章计划；空场景先规划一章。",
+      "recovery": "关闭面板或刷新页面，后端任务仍会继续。暂停会等待当前模型调用返回并保留结果；遇到失败则停在当前步骤。服务重启后可恢复任务，尚未完成的模型调用可能需要重新请求。",
+      "candidateKept": "本步生成结果已保留，继续时会先核对保存结果。",
+      "stopping": "已请求停止；当前模型调用返回后停止，不再开始下一步。",
+      "dirty": "当前页面有未保存内容，请先保存或处理草稿，再开始或继续逐卷写作。",
+      "loading": "正在检查本卷范围…",
+      "readFailed": "任务状态读取失败，请检查连接。",
+      "actionFailed": "操作失败，请重试。",
+      "start": "开始逐卷写作并自动保存",
+      "pause": "暂停",
+      "resume": "继续 / 重试当前步骤",
+      "end": "结束本轮",
+      "endConfirm": "结束后不再继续本轮任务，已保存章节和正文保留。是否结束？",
+      "confirmEnd": "确认结束",
+      "keepTask": "保留任务",
+      "close": "关闭",
+      "closeRunning": "关闭面板，继续后台写作"
+    },
     "pageTitle": "创作工作台",
     "backToShelf": "返回书架",
     "listLayout": {
@@ -3596,6 +3638,7 @@
       }
     },
     "hierarchy": {
+      "volumeWritingButton": "逐卷写作",
       "generationWorkspace": "生成进度与候选审核",
       "prepareVolume": "补齐卷资料",
       "completeVolume": "前往卷规划补齐",

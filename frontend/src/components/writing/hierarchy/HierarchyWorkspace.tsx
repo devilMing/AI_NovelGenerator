@@ -16,6 +16,7 @@ import ChapterBodyEditor from "./ChapterBodyEditor";
 import PlanningEditor from "./PlanningEditor";
 import HierarchyGeneration from "./HierarchyGeneration";
 import ChapterContinuation, { type SavedChapterBatch } from "./ChapterContinuation";
+import { useVolumeWriting } from "./VolumeWritingStatus";
 import { registerSavedChapterBatch } from "./chapterPlanBatches";
 import { readChapterPlanConfirmations } from "./chapterPlanConfirmations";
 import PlotSection from "./PlotSection";
@@ -79,6 +80,10 @@ export default function HierarchyWorkspace({ novelId, location, scope = "chapter
   const [generationPage, setGenerationPage] = useState(false);
   const generationOrigin = useRef<string | null>(null);
   const [continuationScope, setContinuationScope] = useState<"scene" | "arc">("scene");
+  const { openVolume, revision: volumeWritingRevision } = useVolumeWriting();
+  useEffect(() => {
+    if (active && volumeWritingRevision) setRefresh((value) => value + 1);
+  }, [active, volumeWritingRevision]);
   const [continuation, setContinuation] = useState<{ scene: HierarchyNode; arc: HierarchyNode; scope: "scene" | "arc"; batch?: SavedChapterBatch; locationKey: string; open: boolean } | null>(null);
   const continuationRef = useRef(continuation); continuationRef.current = continuation;
   const [batches, setBatches] = useState<{ sceneId: string; items: SavedChapterBatch[] }>({ sceneId: "", items: [] });
@@ -430,6 +435,10 @@ export default function HierarchyWorkspace({ novelId, location, scope = "chapter
         <Button size="sm" variant="primary" isDisabled={actionsDisabled || bodyDirty || Boolean(generationNode || continuation?.open) || !readinessById[node.id]?.can_refine} onPress={() => { generationOrigin.current = selectedKey; setGenerationNode(node); }}>{t(`generate.${node.kind}`)}</Button>
       </div>)}
       {scope === "chapters" && !arcs.length && !loading && volumes.length > 0 && <Button size="sm" variant="outline" isDisabled={actionsDisabled} onPress={() => onArc?.({ volume_id: selected?.record.volume_id ?? volumes[0].id })}>{t("openArcPlanning")}</Button>}
+      {scope === "chapters" && workspaceParent && <Button size="sm" variant="outline" isDisabled={actionsDisabled || bodyDirty || planDirty || recordsDirty || Boolean(generationNode || continuation?.open)} onPress={() => {
+        const volume = volumes.find((item) => item.id === workspaceParent.record.volume_id);
+        if (volume) openVolume({ id: volume.id, title: volume.record.title });
+      }}>{t("volumeWritingButton")}</Button>}
       <TooltipHint text={t("showTrash")}>
         <Button isIconOnly size="sm" variant="ghost" aria-label={t("showTrash")} aria-pressed={showTrash} className={`size-11 shrink-0 sm:size-10 ${showTrash ? "border border-accent bg-selected text-accent" : "text-muted"}`} isDisabled={planSaving || bodySaving || recordsSaving} onPress={() => { setShowTrash(!showTrash); if (showTrash && selected?.record.is_deleted && workspaceParent) choose(workspaceParent); }}>
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="size-4"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" /></svg>

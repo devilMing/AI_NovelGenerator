@@ -21,6 +21,7 @@ import WritingSidebar from "./WritingSidebar";
 import WritingFlowProgress, { type FlowNavigationProgress } from "./WritingFlowProgress";
 import { useResourceRefresh } from "@/hooks/useResourceRefresh";
 import WritingPlaceholder from "./WritingPlaceholder";
+import { VolumeWritingProvider, VolumeWritingStatus } from "./hierarchy/VolumeWritingStatus";
 import NovelInfoWorkspace from "./novel-info/NovelInfoWorkspace";
 import FactionCardsWorkspace from "./factions/FactionCardsWorkspace";
 import CharacterCardsWorkspace from "./characters/CharacterCardsWorkspace";
@@ -656,6 +657,7 @@ export default function WritingContent({ mode, novelId, query, active = true, hi
     // 顶栏的下边框占据 1px，工作区同步扣除，避免页面产生无意义的整页滚动条。
     <AssistantProvider key={novelId ?? "new"} novelId={mode === "edit" ? novelId : undefined} active={pageActive} onNavigate={navigateAssistant}
       initialFocus={searchParams.get("assistant_kind") && searchParams.get("assistant_id") ? { resource_type: searchParams.get("assistant_kind") as NavigationTarget["resource_type"], id: searchParams.get("assistant_id")!, deleted: searchParams.get("assistant_deleted") === "true" } : undefined}>
+    <VolumeWritingProvider key={novelId ?? "new"} novelId={mode === "edit" ? novelId : undefined} active={pageActive} dirty={bodyDirty || workspaceBusy}>
     <div className="flex h-[calc(100dvh-3.5rem-1px)] w-full min-w-0 max-w-full flex-col overflow-x-clip [contain:inline-size] md:flex-row">
       <WritingSidebar
         readiness={readiness?.novel_id === novelId && !readinessError ? readiness : null}
@@ -671,6 +673,7 @@ export default function WritingContent({ mode, novelId, query, active = true, hi
       />
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <div data-assistant-workspaces className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <VolumeWritingStatus />
         {navigationError && <p role="alert" className="px-4 py-2 text-sm text-danger">{navigationError}</p>}
         {readinessError && <div role="alert" className="flex shrink-0 flex-wrap items-center gap-3 border-y border-red-500/40 px-4 py-3 text-sm text-red-700 dark:text-red-300 sm:px-6">
           <p className="min-w-0 flex-1 break-words">{readinessError}</p>
@@ -693,6 +696,7 @@ export default function WritingContent({ mode, novelId, query, active = true, hi
         approvedHistory.current = pendingTraversal; window.history.go(pendingTraversal.to - pendingTraversal.from); setPendingTraversal(null);
       }} />}
     </div>
+    </VolumeWritingProvider>
     </AssistantProvider>
   );
 }

@@ -146,6 +146,16 @@ On macOS / Linux, the equivalent environment command is `export NEXT_PUBLIC_API_
 
 ## Explore the interface
 
+The chapter toolbar's **Write volume / 逐卷写作** processes all existing scenes in the selected arc's parent volume, in arc and scene order. It fills missing chapter plans up to each scene's target, saves them, and then generates and saves each chapter with empty prose. Saved non-empty prose is always skipped. Without a scene chapter target, existing plans are kept; an empty scene receives one plan. This action does not create additional arcs or scenes.
+
+The panel's **View log / 查看日志** expands persisted per-chapter workflow steps, durations, bounded outputs, save verification and errors, with earlier steps available on demand. Retry attempts remain visible. Credentials and private reasoning fields are excluded. Jobs created before logging expose only their retained cached steps and final status.
+
+A task bar stays visible throughout the novel workspace while a volume-writing job is unfinished, including paused and retryable failed jobs. It hides automatically when the run completes or ends. Closing the panel, switching sections, or refreshing keeps the unfinished task visible. **Details / logs** reopens the panel. A lost status connection is shown as unconfirmed rather than continuing to claim the task is running. Completed runs remain accessible from the original **Write volume** button.
+
+Volume writing uses the existing default planning and prose workflows and pins their revisions for the run. Progress, completed workflow nodes, generated candidates, and confirmation keys are stored in MongoDB. Closing the panel or refreshing does not stop the backend worker. Pause waits for the current model call and preserves its result; Continue retries the current step, replaying its save receipt when needed. A backend restart preserves task progress, but an unfinished model call may need another request. Changes to scene scope or planning stop the run for review; ending a run keeps all saved plans and prose.
+
+For an isolated persistence test, set `VOLUME_WRITING_TEST_ARCHIVE` to an explicit rollback checkpoint's `mongodb.archive.gz`, then run `.venv\Scripts\python.exe -m unittest scripts.test_volume_writing`. Tests restore the archive only into newly named `novel_volume_writing_test_*` databases, stub model output, exercise the original context checks and transactional saves, and remove their own test databases. With no archive configured, database integration tests are skipped.
+
 The **character and faction graph** brings relationships and membership together. Filter the graph, zoom, drag nodes, and inspect their details.
 
 ![Three characters, two factions, and their relationships in Tidal Archives](.github/assets/readme/relationships.png)
