@@ -1,0 +1,192 @@
+"""Automatic chapter fact extraction, independent review, and append-only adoption."""
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Awaitable, Callable
+
+from bson import ObjectId
+
+from backend.api.error_protocol import DomainApiError
+from backend.db.base import BaseRepository
+from backend.db.transaction import run_mongo_write_unit
+from backend.db.utils import get_utc_now
+from backend.db.write_contracts import canonical_request_hash
+from backend.services.assistant.models import structured_advice
+from backend.services.novel.chapter_fact_contract import ChapterFactExtractionV1, ChapterFactReviewV1
+
+
+EXTRACTION_INSTRUCTIONS = (
+    "你是小说章后事实提取器。只提取本章正文明确造成、且下一章需要知道的状态变化。"
+    "不得把计划、猜测、气氛、未来意图或未发生事件写成事实。每项必须引用正文中的连续原文，start按Unicode码点计算。"
+    "subject只能使用资料中allowed_subjects列出的稳定身份；before必须等于current_facts中的当前值，未知时为null。"
+)
+REVIEW_INSTRUCTIONS = (
+    "你是独立的小说事实审校。逐项核对章前事实、正文原文和拟更新值。"
+    "明确支持选择accept；只是推测或不值得长期保存选择omit；若正文自身与既有事实形成会影响后续写作的冲突选择block。"
+    "必须对每个候选给出且只给出一个决定。source_quote如填写，只能复制正文中的一段连续原文，"
+    "不得跨段拼接、改写、插入省略号或把多处引文合成一条。"
+)
+REPAIR_INSTRUCTIONS = (
+    "你是小说事实候选修复器。根据确定性校验错误或独立审核的block意见重新提取整批事实。"
+    "只能使用真实正文和allowed_subjects，删除无法证明的变化；不得为了通过审核而改写证据。"
+)
+
+
+def _fact_key(row: Any) -> tuple[str, str, str]:
+    return row.subject_type, row.subject_id, row.field
+
+
+def validate_extraction(
+    extraction: ChapterFactExtractionV1,
+    content: str,
+    allowed_subjects: set[tuple[str, str]],
+    current_facts: dict[tuple[str, str, str], Any],
+) -> dict:
+    """Apply deterministic evidence, identity, and before-value checks."""
+    for index, row in enumerate(extraction.facts):
+        if (row.subject_type, row.subject_id) not in allowed_subjects:
+            raise DomainApiError(
+                "CHAPTER_FACT_SUBJECT_UNKNOWN", "章后事实引用了本次资料以外的对象", status_code=422,
+                details={"index": index, "subject_type": row.subject_type, "subject_id": row.subject_id},
+            )
+        evidence = row.evidence
+        if content[evidence.start:evidence.start + len(evidence.quote)] != evidence.quote:
+            raise DomainApiError(
+                "CHAPTER_FACT_EVIDENCE_MISMATCH", "章后事实的正文引文与固定修订不一致", status_code=422,
+                details={"index": index, "start": evidence.start, "quote": evidence.quote},
+            )
+        expected = current_facts.get(_fact_key(row))
+        if row.before != expected:
+            raise DomainApiError(
+                "CHAPTER_FACT_BEFORE_CHANGED", "章后事实的章前值与当前事实快照不一致", status_code=409,
+                details={"index": index, "expected": expected, "received": row.before},
+            )
+    return extraction.model_dump(mode="json")
+
+
+def merge_reviews(extraction: ChapterFactExtractionV1, reviews: list[ChapterFactReviewV1]) -> dict:
+    """Merge independent decisions, requiring two approvals for high-risk facts."""
+    if any(row.risk == "high" for row in extraction.facts) and len(reviews) < 2:
+        raise DomainApiError(
+            "CHAPTER_FACT_SECOND_REVIEW_REQUIRED", "高风险事实需要第二次独立审核", status_code=409,
+        )
+    decisions = [{row.index: row for row in review.decisions} for review in reviews]
+    accepted, omitted, blocked = [], [], []
+    for index, fact in enumerate(extraction.facts):
+        required = 2 if fact.risk == "high" else 1
+        selected = [review[index] for review in decisions[:required]]
+        if any(row.decision == "block" for row in selected):
+            blocked.append(index)
+        elif any(row.decision == "omit" for row in selected):
+            omitted.append(index)
+        else:
+            accepted.append(index)
+    return {
+        "accepted_indices": accepted,
+        "omitted_indices": omitted,
+        "blocked_indices": blocked,
+        "blocking": bool(blocked),
+    }
+
+
+async def extract_facts(material: dict, *, repair: dict | None = None,
+                        before_send: Callable[[], Awaitable[Any]] | None = None) -> tuple[dict, dict]:
+    """Request a fresh extraction or a bounded repair using the configured default model."""
+    schema, usage = await structured_advice(
+        {}, REPAIR_INSTRUCTIONS if repair else EXTRACTION_INSTRUCTIONS,
+        {**material, **({"repair": repair} if repair else {})}, ChapterFactExtractionV1,
+        before_send=before_send,
+    )
+    return schema.model_dump(mode="json"), usage
+
+
+async def review_facts(material: dict, extraction: dict, *,
+                       before_send: Callable[[], Awaitable[Any]] | None = None) -> tuple[dict, dict]:
+    """Independently review every extracted proposal."""
+    schema, usage = await structured_advice(
+        {}, REVIEW_INSTRUCTIONS, {**material, "extraction": extraction}, ChapterFactReviewV1,
+        before_send=before_send,
+    )
+    checked = ChapterFactReviewV1.model_validate(
+        schema.model_dump(mode="json"), context={"fact_count": len(extraction["facts"])},
+    )
+    return checked.model_dump(mode="json"), usage
+
+
+def public_current_facts(rows: list[dict]) -> list[dict]:
+    """Fold append-only accepted facts into the effective state exposed to later writing."""
+    current: dict[tuple[str, str, str], dict] = {}
+    for batch in rows:
+        for fact in batch.get("facts", []):
+            key = (fact["subject_type"], fact["subject_id"], fact["field"])
+            current[key] = {
+                **deepcopy(fact),
+                "chapter_id": str(batch["chapter_id"]),
+                "revision_id": str(batch["revision_id"]),
+                "content_hash": batch["content_hash"],
+            }
+    return [current[key] for key in sorted(current)]
+
+
+async def adopt_fact_batch(
+    novel_id: str,
+    chapter: dict,
+    revision: dict,
+    extraction: dict,
+    reviews: list[dict],
+    merged: dict,
+    attempts: list[dict],
+    *,
+    session=None,
+) -> dict:
+    """Commit one immutable, idempotent fact batch bound to the saved revision."""
+    collection = BaseRepository("chapter_fact_batches").collection
+    await collection.create_index(
+        [("novel_id", 1), ("chapter_id", 1), ("chapter_version", 1), ("status", 1)],
+        name="chapter_fact_batches_current_revision",
+    )
+    accepted = [deepcopy(extraction["facts"][index]) for index in merged["accepted_indices"]]
+    payload = {
+        "schema_version": 1,
+        "novel_id": ObjectId(novel_id),
+        "chapter_id": chapter["_id"],
+        "revision_id": revision["_id"],
+        "chapter_version": revision["version"],
+        "content_hash": revision["content_hash"],
+        "facts": accepted,
+        "omitted_indices": merged["omitted_indices"],
+        "extraction": deepcopy(extraction),
+        "reviews": deepcopy(reviews),
+        "attempts": deepcopy(attempts),
+    }
+    fingerprint = canonical_request_hash(payload)
+    identity = f"auto-facts:{revision['_id']}"
+
+    async def save(active_session):
+        current_chapter = await BaseRepository("chapters").collection.find_one({
+            "_id": chapter["_id"], "novel_id": ObjectId(novel_id), "is_deleted": False,
+        }, session=active_session)
+        current_revision = await BaseRepository("chapter_revisions").collection.find_one({
+            "_id": revision["_id"], "chapter_id": chapter["_id"], "content_hash": revision["content_hash"],
+        }, session=active_session)
+        if current_chapter is None or current_revision is None or current_chapter["version"] != revision["version"]:
+            raise DomainApiError(
+                "CHAPTER_FACT_REVISION_CHANGED", "章后事实所依据的正文已经变化", status_code=409,
+            )
+        existing = await collection.find_one({"_id": identity}, session=active_session)
+        if existing is not None:
+            if existing["request_fingerprint"] != fingerprint:
+                raise DomainApiError(
+                    "CHAPTER_FACT_IDEMPOTENCY_CONFLICT", "同一正文修订已有不同的事实批次", status_code=409,
+                )
+            return existing
+        document = {
+            "_id": identity, **payload, "request_fingerprint": fingerprint,
+            "status": "confirmed", "created_at": get_utc_now().replace(tzinfo=None),
+        }
+        await collection.insert_one(document, session=active_session)
+        return document
+
+    if session is not None:
+        return await save(session)
+    return await run_mongo_write_unit(save, "adopt_automatic_chapter_facts", require_transaction=True)
