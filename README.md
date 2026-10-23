@@ -14,6 +14,17 @@ AI Novel Generator is a writing workspace that runs on your computer. Write by h
 
 Thanks to members of the [LINUX DO community](https://linux.do/) for providing community-run API resources that supported generation workflow testing during development.
 
+## Latest update
+
+### 2026-10-23
+
+- One-click writing can now prepare missing material and plans, save the first chapter, and continue through a volume without overwriting existing prose.
+- Every saved chapter now runs fact extraction and independent review before confirmed facts become context for the next chapter.
+- Persistent runtime logs, retry timelines, token usage statistics, reasoning controls, and completed-chapter export are now available.
+- Pause/resume and restart recovery were strengthened, including automatic recovery when a fact review returns an invalid source quotation.
+
+[Read the full release notes](docs/releases/release-notes.md).
+
 ## Watch the demo
 
 These clips follow the fictional project *Tidal Archives* from creation to its first saved chapter, recorded in the current application. **The demo uses preset model responses to show the workflow, not model quality.**
