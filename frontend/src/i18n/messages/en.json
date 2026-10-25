@@ -1084,7 +1084,8 @@
         },
         "progress": "Scenes {scenes}/{total} · Written this run {written} · Existing chapters skipped {skipped}",
         "connectionLost": "Status connection lost; reconnecting. The last progress does not confirm that the job is still running.",
-        "lastUpdate": "Last update: {time}."
+        "lastUpdate": "Last update: {time}.",
+        "fullProgress": "Arcs {completed}/{total} · {written} written · {skipped} existing chapters skipped"
       },
       "logs": {
         "title": "Execution log",
@@ -1101,7 +1102,7 @@
         "truncated": "Showing the first 16,000 characters of this output. Saved chapter text is unaffected."
       },
       "title": "Write volume",
-      "description": "Process saved scenes in reading order, filling missing plans and empty text. After prose is saved, chapter-end facts are extracted, independently reviewed, and adopted before the next chapter reads them. Existing prose only receives a missing fact batch and is never regenerated or overwritten. Unplanned scenes are outside this run's scope.",
+      "description": "Work through this volume in arc order. Fill missing volume plot, volume resources, arc plans, arc plots and scenes, then save chapter plans and write each chapter. Reviewed text is saved before updating chapter facts. Existing plots, scenes and text remain; conflicting plans or stale sources stop the queue for attention.",
       "counts": {
         "scenes": "Scenes",
         "written": "Already written",
@@ -1112,7 +1113,7 @@
         "running": "Writing volume",
         "paused": "Paused; ready to continue",
         "failed": "Stopped with progress preserved",
-        "completed": "All existing scenes in this volume are written",
+        "completed": "All arcs and scenes in this volume have been processed",
         "cancelled": "Run ended; saved chapters preserved"
       },
       "stage": {
@@ -1122,15 +1123,20 @@
         "saving": "Saving and verifying",
         "fact_extracting": "Extracting chapter facts",
         "fact_reviewing": "Reviewing chapter facts",
-        "fact_saving": "Updating fact library"
+        "fact_saving": "Updating fact library",
+        "volume_plot": "Fill volume plot",
+        "volume_preparing": "Prepare volume resources",
+        "arc_planning": "Plan arcs",
+        "arc_plot": "Fill arc plot",
+        "scene_planning": "Generate and save scenes"
       },
       "progress": "Scenes {scenes}/{total} · Plans added {plans} · Chapters written {written} · Existing chapters skipped {skipped}",
       "sceneProgress": "Completed scenes",
       "guidance": "Volume writing instructions (optional)",
-      "defaults": "Uses the current default planning and writing workflows, with revisions pinned for this run. Models and reasoning use system settings unless overridden below. Scenes without a chapter target keep existing plans, or receive one plan if empty.",
-      "recovery": "The backend keeps working when you close this panel or refresh. Pause waits for the current model call and keeps its result. Errors stop at the current step. Progress can be resumed after a server restart; unfinished model calls may need to be requested again.",
+      "defaults": "Use current default flows and pin their revisions for this task. Model and reasoning settings follow system defaults. Missing plots and scenes are filled first; established budgets and existing content are retained.",
+      "recovery": "The backend keeps working when you close this panel or refresh. Text, arc-plan, scene-plan and chapter-plan consistency conflicts trigger up to 2 repairs, each followed by an independent review. Unresolved candidates and evidence remain for attention. Each consistency check, candidate repair, fact extraction or fact review has a 5-minute total limit. Pause or end allows the current model request up to 15 more seconds to return, then cancels the wait. Saved content and completed steps remain; continuing retries only unfinished steps.",
       "candidateKept": "This step's generated result is saved. Continuing verifies its save before proceeding.",
-      "stopping": "Stop requested. Waiting for the current model call; no further steps will start.",
+      "stopping": "Stop requested. Allowing the current model request up to 15 more seconds, keeping completed results; no further steps will start.",
       "dirty": "Save or resolve unsaved changes before starting or resuming volume writing.",
       "loading": "Checking the volume…",
       "readFailed": "Could not read task status. Check your connection.",
@@ -1143,7 +1149,14 @@
       "confirmEnd": "Confirm end",
       "keepTask": "Keep run",
       "close": "Close",
-      "closeRunning": "Close panel; keep writing"
+      "closeRunning": "Close panel; keep writing",
+      "legacyDescription": "This older task only handles scenes saved when it started: chapter planning, text and chapter facts. Its scope stays fixed. To fill missing plots and scenes, end this task and start a new one.",
+      "preparationSummary": "{arcs} arcs · {plots} missing arc plots · {scenes} arcs without scenes",
+      "preparationProgress": "Arcs {completed}/{total} · {arcs} new arcs · {scenes} new scenes",
+      "missingVolumePlot": "The missing volume plot will be generated first.",
+      "missingArcs": "Arc plans for this volume will be generated automatically.",
+      "legacyCompleted": "The previous task finished all scenes in its saved scope",
+      "arcProgress": "Completed arc progress"
     },
     "pageTitle": "Writing Desk",
     "backToShelf": "Back to Bookshelf",

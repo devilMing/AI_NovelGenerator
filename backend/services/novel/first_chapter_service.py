@@ -24,6 +24,8 @@ from backend.db.write_contracts import canonical_request_hash
 from backend.services.assistant.runtime import book_lease
 from backend.services.novel import first_chapter_plan as plan
 from backend.services.novel.first_chapter_review import review_candidate
+from backend.services.novel.first_chapter_item_repair import repair_opening_items
+from backend.services.novel.model_wait import ModelWaitStopped, wait_for_model
 from backend.services.novel.first_chapter_save import save_candidate
 from backend.services.novel.first_chapter_log import timeline
 from backend.services.novel.volume_writing_log import safe_event, public as public_log
@@ -226,6 +228,8 @@ async def make_operation(job, data, step):
     guidance = job["settings"]["user_guidance"]
     if task == "create_characters_by_ai":
         guidance += "\n补齐书初主角与必要核心人物，不重复已有角色；必须包含主角。"
+    if task == "create_items_by_ai":
+        guidance += "\n本步骤会把物品确认为书初事实：只生成故事开局已存在的物品及真实归属。不得把后续才创立的制度文书、军械、粮券或未来势力的持有事实提前创建；未来物品留待对应情节，不要为了凑数量提前生成。"
     request = GraphRunRequest(flow_ref={"id": flow.id, "revision": flow.revision} if flow else None, flow_inputs={**step["inputs"], "user_guidance": guidance},
                               scope=scope, generation_params=job["settings"]["generation_params"], use_stream=False)
     operation = {"_id": ObjectId(), "job_id": job["_id"], "step": step, "signature": plan.signature(data),
@@ -313,6 +317,9 @@ async def perform(job, operation, *, checkpoint_lock=None):
         # Keep every rejected candidate and its evidence; a bounded repair reruns only this step.
         if operation["repairs"] >= 2 or task == "confirm_existing_preparation":
             raise DomainApiError("FIRST_CHAPTER_CONSISTENCY_CONFLICT", "两次修订后仍有一致性冲突，候选与引证已保留在日志；请处理来源或调整流程后重新开始。", status_code=409)
+        if task == "create_items_by_ai":
+            await repair_item_operation(job, operation, attempt, label)
+            return
         await collection("candidates").insert_one({"job_id": job_id, "step_id": op_id, "result": operation["result"], "review": operation["review"], "created_at": now()})
         feedback = "\n修订本步候选，仅解决以下有依据的冲突，不改变已保存资料：" + str(operation["review"]["issues"])
         guidance = job["settings"]["user_guidance"] + feedback
@@ -355,6 +362,45 @@ async def perform(job, operation, *, checkpoint_lock=None):
     # rather than racing it against the transaction or replaying unknown commits.
     async with checkpoint_lock if checkpoint_lock is not None else asyncio.Lock():
         await run_mongo_write_unit(save, "save_first_chapter_step", require_transaction=True)
+
+
+async def repair_item_operation(job, operation, attempt, label):
+    job_id, op_id = job["_id"], operation["_id"]
+    await update(job_id, {"current.stage": "repairing"})
+    path = f"_repair_items_{operation['repairs'] + 1}"
+    async def progress(data):
+        await log(job_id, op_id, attempt, label, {"instance_path": path, "label": "修订书初物品候选", **data})
+    async def control_state():
+        current = await collection().find_one({"_id": job_id})
+        if not current or current.get("owner") != OWNER or current["status"] != "running":
+            raise asyncio.CancelledError()
+        return current
+    await progress({"state": "running"})
+    try:
+        candidate, metadata = await wait_for_model(
+            lambda: repair_opening_items(operation["result"], operation["review"]),
+            control=control_state, progress=progress, label="修订书初物品候选")
+    except ModelWaitStopped:
+        await stop(job_id)
+        return
+    # Keep the paid original and full evidence, then atomically replace only the
+    # pending candidate. No formal item, basis, author guidance or saved step changes.
+    history = {"job_id": job_id, "step_id": op_id, "result": operation["result"],
+               "review": operation["review"], "repaired_candidate": candidate, "model": metadata, "created_at": now()}
+    result = {**operation["result"], "candidate": candidate}
+    if len(BSON.encode({"result": result})) > 12_000_000:
+        raise DomainApiError("FIRST_CHAPTER_RESULT_TOO_LARGE", "物品修订结果过大，原候选已保留。", status_code=422)
+    async def checkpoint(session):
+        current = await collection().find_one({"_id": job_id, "owner": OWNER, "status": "running", "pending": op_id}, session=session)
+        if current is None:
+            raise DomainApiError("FIRST_CHAPTER_INTERRUPTED", "任务占用已变化，原候选已保留。", status_code=409)
+        await collection("candidates").insert_one(history, session=session)
+        changed = await collection("steps").update_one({"_id": op_id, "job_id": job_id, "repairs": operation["repairs"]},
+            {"$set": {"result": result, "review": None}, "$inc": {"repairs": 1}}, session=session)
+        if changed.matched_count != 1:
+            raise DomainApiError("FIRST_CHAPTER_SOURCE_CHANGED", "修订检查点已变化，候选已保留。", status_code=409)
+    await run_mongo_write_unit(checkpoint, "checkpoint_opening_item_repair", require_transaction=True)
+    await progress({"state": "done", "message": "完整修订候选已保留，等待独立复核。", "outputs": {"candidate": candidate, "model": metadata}})
 
 
 async def attach_review_sources(task, result, generation_params):

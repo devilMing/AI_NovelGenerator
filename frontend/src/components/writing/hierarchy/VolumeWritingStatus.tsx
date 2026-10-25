@@ -106,7 +106,9 @@ export function VolumeWritingStatus() {
           <span role="status" aria-live="polite" className={warning ? "font-medium text-danger" : "font-medium text-accent"}>{t(`monitor.state.${state}`)}</span>
           {job && <span className="min-w-0 truncate text-muted" title={job.volume_title}>{job.volume_title}</span>}
         </div>
-        {job && <p className="text-xs tabular-nums text-muted">{t("monitor.progress", { scenes: job.completed_scenes, total: job.summary.scenes, written: job.written_chapters, skipped: job.skipped_chapters })}</p>}
+        {job && <p className="text-xs tabular-nums text-muted">{job.complete_planning
+          ? t("monitor.fullProgress", { completed: job.completed_arcs ?? 0, total: job.summary.arcs ?? 0, written: job.written_chapters, skipped: job.skipped_chapters })
+          : t("monitor.progress", { scenes: job.completed_scenes, total: job.summary.scenes, written: job.written_chapters, skipped: job.skipped_chapters })}</p>}
         {running && job?.current && <p className="truncate text-xs text-muted" title={`${job.current.title} · ${job.current.node}`}>
           {t(`stage.${job.current.stage}`)} · {job.current.title}{job.current.node && ` · ${job.current.node}`}
         </p>}
@@ -115,6 +117,7 @@ export function VolumeWritingStatus() {
       </div>
       {job && <Button size="sm" variant="outline" className="min-h-10 shrink-0" onPress={openDetails}>{t("monitor.details")}</Button>}
     </div>
-    {running && job && <progress aria-label={t("sceneProgress")} className="mt-2 block h-1 w-full accent-accent" max={Math.max(1, job.summary.scenes)} value={job.completed_scenes} />}
+    {running && job && <progress aria-label={t(job.complete_planning ? "arcProgress" : "sceneProgress")} className="mt-2 block h-1 w-full accent-accent"
+      max={Math.max(1, job.complete_planning ? job.summary.arcs ?? 0 : job.summary.scenes)} value={job.complete_planning ? job.completed_arcs ?? 0 : job.completed_scenes} />}
   </section>;
 }

@@ -53,7 +53,7 @@ class ChapterFactExtractionV1(StrictRequestModel):
 class ChapterFactDecisionV1(StrictRequestModel):
     """Independent decision for one proposal index."""
 
-    index: int = Field(ge=0, le=49)
+    index: int = Field(ge=0, le=49, description="extraction.facts 中从 0 开始的数组下标；必须逐项覆盖，不得从 1 开始编号。")
     decision: Literal["accept", "omit", "block"]
     message: str = Field(min_length=1, max_length=2000)
     source_quote: str | None = Field(default=None, min_length=1, max_length=10000)

@@ -435,8 +435,8 @@ export default function HierarchyWorkspace({ novelId, location, scope = "chapter
         <Button size="sm" variant="primary" isDisabled={actionsDisabled || bodyDirty || Boolean(generationNode || continuation?.open) || !readinessById[node.id]?.can_refine} onPress={() => { generationOrigin.current = selectedKey; setGenerationNode(node); }}>{t(`generate.${node.kind}`)}</Button>
       </div>)}
       {scope === "chapters" && !arcs.length && !loading && volumes.length > 0 && <Button size="sm" variant="outline" isDisabled={actionsDisabled} onPress={() => onArc?.({ volume_id: selected?.record.volume_id ?? volumes[0].id })}>{t("openArcPlanning")}</Button>}
-      {scope === "chapters" && workspaceParent && <Button size="sm" variant="outline" isDisabled={actionsDisabled || bodyDirty || planDirty || recordsDirty || Boolean(generationNode || continuation?.open)} onPress={() => {
-        const volume = volumes.find((item) => item.id === workspaceParent.record.volume_id);
+      {workspaceParent && <Button size="sm" variant="outline" isDisabled={actionsDisabled || bodyDirty || planDirty || recordsDirty || Boolean(generationNode || continuation?.open)} onPress={() => {
+        const volume = scope === "arcs" ? workspaceParent : volumes.find((item) => item.id === workspaceParent.record.volume_id);
         if (volume) openVolume({ id: volume.id, title: volume.record.title });
       }}>{t("volumeWritingButton")}</Button>}
       <TooltipHint text={t("showTrash")}>

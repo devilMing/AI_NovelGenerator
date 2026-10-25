@@ -692,9 +692,12 @@ async def load_writing_context(task: str, parameters: dict[str, Any], scope: dic
     fact_batches = [row for row in all_fact_batches
                     if row["chapter_version"] == directories["chapter"][row["chapter_id"]]["version"]]
     fact_batches.sort(key=lambda row: writing_order("chapter", directories["chapter"][row["chapter_id"]], directories))
-    from backend.services.novel.chapter_fact_service import public_current_facts
-    confirmed_chapter_facts = public_current_facts(fact_batches)
-    observe("chapter_fact_batches", {**target_scope, "visible_chapter_ids": [str(value) for value in visible_ids]}, confirmed_chapter_facts)
+    from backend.services.novel.chapter_fact_service import public_current_facts, current_facts_for_writing
+    full_chapter_facts = public_current_facts(fact_batches)
+    # Keep the original full evidence fingerprint for old candidates and source
+    # revalidation; only the model-facing projection omits transition audit data.
+    observe("chapter_fact_batches", {**target_scope, "visible_chapter_ids": [str(value) for value in visible_ids]}, full_chapter_facts)
+    confirmed_chapter_facts = current_facts_for_writing(full_chapter_facts)
     written = await BaseRepository("chapters").collection.find({"novel_id": ObjectId(request.novel_id), "_id": {"$in": visible_ids}, "is_deleted": False, "content": {"$regex": r"\S"}}, {"content": 0}, session=session).limit(10001).to_list(length=10001)
     prior = [(writing_order("chapter", doc, directories), doc) for doc in written
              if chapter_visible_at_position(doc, directories, position)]

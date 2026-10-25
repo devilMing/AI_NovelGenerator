@@ -137,6 +137,13 @@ class FullFlowTests(unittest.IsolatedAsyncioTestCase):
                     if field != "chapters":
                         row["planning"]["target_chapter_count"] = 2
                     output[field] = [row]
+                    if field == "chapters":
+                        context = inputs.get("writing_context") or {}
+                        if isinstance(context, str):
+                            context = __import__("json").loads(context)
+                        count = context.get("count", 1)
+                        if count > 1:
+                            output[field] = [{**deepcopy(row), "title": f"第{i + 1}章 入城"} for i in range(count)]
             elif task == "write_chapter_by_ai":
                 output = {"content": "城门初开，主角走入城中。\n\n他循着旧案的线索，前去寻找那封信。"}
             yield {"status": "done", "outputs": output}
@@ -230,6 +237,89 @@ class FullFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counts, {name: await self.db[name].count_documents({}) for name in counts})
         for task in {call[0] for call in self.calls}:
             self.assertIn(task, self.reviewed_tasks)
+
+    async def test_long_item_report_repairs_candidate_then_independently_reviews_and_saves(self):
+        import json
+        delegated=service.review_candidate
+        reviews,repairs=0,0
+        async def review(task,result,settings):
+            nonlocal reviews
+            if task=="create_items_by_ai":
+                reviews+=1
+                if reviews==1:
+                    return {"summary":"未来物品提前","issues":[{"message":"未来物品不能放在书初。"*300}]}
+            return await delegated(task,result,settings)
+        async def repair(result,report):
+            nonlocal repairs
+            repairs+=1
+            self.assertGreater(len(json.dumps(report,ensure_ascii=False)),2000)
+            return {"items":deepcopy(result["candidate"]["items"][:3])},{"model":"test-repair"}
+        with patch.object(service,"review_candidate",review),patch.object(service,"repair_opening_items",repair):
+            await service.start(self.novel,service.Start(include_optional=True,user_guidance="保留作者要求"),"long-item-report")
+            job=await self.wait_status("completed","failed")
+        self.assertEqual(job["status"],"completed",job.get("error"))
+        self.assertEqual((repairs,reviews),(1,2))
+        self.assertEqual(await self.db.items.count_documents({}),3)
+        step=await self.db.first_chapter_steps.find_one({"step.task":"create_items_by_ai"})
+        self.assertTrue(step["request"]["flow_inputs"]["user_guidance"].startswith("保留作者要求"))
+        self.assertIn("书初事实",step["request"]["flow_inputs"]["user_guidance"])
+        self.assertEqual(step["repairs"],1)
+        self.assertEqual(step["review"]["issues"],[])
+        history=await self.db.first_chapter_candidates.find_one({"step_id":step["_id"]})
+        self.assertEqual(len(history["result"]["candidate"]["items"]),6)
+        self.assertEqual(len(history["repaired_candidate"]["items"]),3)
+        self.assertEqual(step["result"]["basis"],history["result"]["basis"])
+
+    async def test_pause_after_item_repair_keeps_result_and_only_rereviews_on_resume(self):
+        delegated=service.review_candidate
+        reviews,repairs=0,0
+        async def review(task,result,settings):
+            nonlocal reviews
+            if task=="create_items_by_ai":
+                reviews+=1
+                if reviews==1:
+                    return {"summary":"未来物品提前","issues":[{"message":"未来物品不能放在书初。"*300}]}
+            return await delegated(task,result,settings)
+        async def repair(result,report):
+            nonlocal repairs
+            repairs+=1
+            job=await self.db.first_chapter_jobs.find_one({"active":True})
+            await service.control(self.novel,str(job["_id"]),"pause")
+            return {"items":deepcopy(result["candidate"]["items"][:3])},{}
+        with patch.object(service,"review_candidate",review),patch.object(service,"repair_opening_items",repair):
+            started=await service.start(self.novel,service.Start(include_optional=True),"pause-item-repair")
+            paused=await self.wait_status("paused","failed")
+            self.assertEqual(paused["status"],"paused",paused.get("error"))
+            self.assertEqual(await self.db.items.count_documents({}),0)
+            step=await self.db.first_chapter_steps.find_one({"step.task":"create_items_by_ai"})
+            self.assertIsNone(step["review"])
+            self.assertEqual(len(step["result"]["candidate"]["items"]),3)
+            item_calls=[row for row in self.calls if row[0]=="create_items_by_ai"]
+            await service.control(self.novel,started["id"],"resume")
+            completed=await self.wait_status("completed","failed")
+        self.assertEqual(completed["status"],"completed",completed.get("error"))
+        self.assertEqual((repairs,reviews),(1,2))
+        self.assertEqual(item_calls,[row for row in self.calls if row[0]=="create_items_by_ai"])
+
+    async def test_item_repair_stops_after_two_completed_repairs_without_adoption(self):
+        delegated=service.review_candidate
+        repairs=0
+        async def review(task,result,settings):
+            if task=="create_items_by_ai":
+                return {"summary":"仍有冲突","issues":[{"message":"未来物品不能放在书初。"*300}]}
+            return await delegated(task,result,settings)
+        async def repair(result,report):
+            nonlocal repairs
+            repairs+=1
+            return deepcopy(result["candidate"]),{}
+        with patch.object(service,"review_candidate",review),patch.object(service,"repair_opening_items",repair):
+            started=await service.start(self.novel,service.Start(include_optional=True),"item-repair-limit")
+            failed=await self.wait_status("failed","completed")
+            self.assertEqual(failed["error"]["code"],"FIRST_CHAPTER_CONSISTENCY_CONFLICT")
+            await service.control(self.novel,started["id"],"resume")
+            await self.wait_status("failed","completed")
+        self.assertEqual(repairs,2)
+        self.assertEqual(await self.db.items.count_documents({}),0)
 
 
 if __name__ == "__main__":

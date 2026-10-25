@@ -67,7 +67,7 @@ export default function VolumeWriting({ novelId, volumeId, volumeTitle, open, di
         startKey.current ??= crypto.randomUUID();
         const generationParams = { ...buildGenerationParamsPayload(params) };
         delete generationParams.use_stream;
-        frozenStart.current ??= { user_guidance: guidance, generation_params: generationParams };
+        frozenStart.current ??= { complete_planning: true, user_guidance: guidance, generation_params: generationParams };
         result = await apiPost(base, frozenStart.current, { headers: { "Idempotency-Key": startKey.current } });
         startKey.current = null; frozenStart.current = null;
       } else result = await apiPost(`${base}/${job!.id}/${action}`, {});
@@ -90,7 +90,7 @@ export default function VolumeWriting({ novelId, volumeId, volumeTitle, open, di
           <Modal.CloseTrigger aria-label={t("close")} />
         </Modal.Header>
         <Modal.Body className="workspace-scrollbar space-y-4 px-5 py-5 sm:px-7">
-          <p className="text-sm leading-6 text-muted">{t("description")}</p>
+          <p className="text-sm leading-6 text-muted">{t(job?.active && !job.complete_planning ? "legacyDescription" : "description")}</p>
           {dirty && <p role="alert" className="text-sm text-danger">{t("dirty")}</p>}
           {(error || readError) && <RelationEditorErrorSummary message={error || readError} />}
           {job?.error && <RelationEditorErrorSummary message={job.error.message} fieldErrors={job.error.field_errors} />}
@@ -98,10 +98,17 @@ export default function VolumeWriting({ novelId, volumeId, volumeTitle, open, di
             {info && <dl className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-surface-secondary p-4 text-sm sm:grid-cols-4">
               {(["scenes", "written", "missing_plans", "pending_bodies"] as const).map((key) => <div key={key}><dt className="text-xs text-muted">{t(`counts.${key}`)}</dt><dd className="mt-1 text-xl font-semibold tabular-nums">{info[key]}</dd></div>)}
             </dl>}
+            {info?.complete_planning && <p className="text-sm text-muted">{t("preparationSummary", {
+              arcs: info.arcs ?? 0, plots: info.missing_arc_plots ?? 0, scenes: info.arcs_without_scenes ?? 0,
+            })}{info.volume_plot_missing && ` ${t("missingVolumePlot")}`}{!info.arcs && ` ${t("missingArcs")}`}</p>}
             {job && <section aria-live="polite" className="space-y-2 rounded-xl border border-border p-4">
-              <p className="font-medium">{t(`status.${job.status}`)}</p>
+              <p className="font-medium">{t(job.status === "completed" && !job.complete_planning ? "legacyCompleted" : `status.${job.status}`)}</p>
               <p className="text-sm tabular-nums">{t("progress", { scenes: job.completed_scenes, total: job.summary.scenes, plans: job.created_chapters, written: job.written_chapters, skipped: job.skipped_chapters })}</p>
-              <progress aria-label={t("sceneProgress")} className="h-2 w-full accent-accent" max={Math.max(1, job.summary.scenes)} value={job.completed_scenes} />
+              {job.complete_planning && <p className="text-sm tabular-nums">{t("preparationProgress", {
+                completed: job.completed_arcs ?? 0, total: job.summary.arcs ?? 0, arcs: job.created_arcs ?? 0, scenes: job.created_scenes ?? 0,
+              })}</p>}
+              <progress aria-label={t(job.complete_planning ? "arcProgress" : "sceneProgress")} className="h-2 w-full accent-accent"
+                max={Math.max(1, job.complete_planning ? job.summary.arcs ?? 0 : job.summary.scenes)} value={job.complete_planning ? job.completed_arcs ?? 0 : job.completed_scenes} />
               {job.current && <p className="break-words text-sm">{t(`stage.${job.current.stage}`)} · {job.current.title}{job.current.node && ` · ${job.current.node}`}</p>}
               {job.has_saved_candidate && job.status !== "completed" && <p className="text-xs text-muted">{t("candidateKept")}</p>}
               {stopping && running && <p role="status" className="text-sm text-muted">{t("stopping")}</p>}
@@ -122,7 +129,7 @@ export default function VolumeWriting({ novelId, volumeId, volumeTitle, open, di
             : <Button size="sm" variant="ghost" isDisabled={busy || Boolean(stopping)} onPress={() => setConfirmEnd(true)}>{t("end")}</Button>)}
           {running && <Button size="sm" variant="outline" isDisabled={busy || Boolean(stopping)} onPress={() => void act("pause")}>{t("pause")}</Button>}
           {job?.active && !running && <Button size="sm" variant="primary" isDisabled={busy || dirty || Boolean(readError)} onPress={() => void act("resume")}>{t("resume")}</Button>}
-          {canStart && <Button size="sm" variant="primary" isDisabled={busy || loading || dirty || !summary?.scenes || Boolean(readError)} onPress={() => void act("start")}>{t("start")}</Button>}
+          {canStart && <Button size="sm" variant="primary" isDisabled={busy || loading || dirty || !summary || Boolean(readError)} onPress={() => void act("start")}>{t("start")}</Button>}
         </Modal.Footer>
       </Modal.Dialog>
     </Modal.Container>

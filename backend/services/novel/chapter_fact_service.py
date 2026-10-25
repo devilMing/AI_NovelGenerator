@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any, Awaitable, Callable
 
 from bson import ObjectId
+from pydantic import ValidationError
 
 from backend.api.error_protocol import DomainApiError
 from backend.db.base import BaseRepository
@@ -23,7 +24,10 @@ EXTRACTION_INSTRUCTIONS = (
 REVIEW_INSTRUCTIONS = (
     "你是独立的小说事实审校。逐项核对章前事实、正文原文和拟更新值。"
     "明确支持选择accept；只是推测或不值得长期保存选择omit；若正文自身与既有事实形成会影响后续写作的冲突选择block。"
-    "必须对每个候选给出且只给出一个决定。source_quote如填写，只能复制正文中的一段连续原文，"
+    "必须对extraction.facts的每个候选给出且只给出一个决定。index是从0开始的数组下标，"
+    "必须恰好覆盖review_contract.expected_indices；两项候选必须返回index=0和index=1，不能使用1和2。"
+    "即使决定omit或block也必须返回该项；空候选返回空decisions。"
+    "source_quote如填写，只能复制正文中的一段连续原文，"
     "不得跨段拼接、改写、插入省略号或把多处引文合成一条。"
 )
 REPAIR_INSTRUCTIONS = (
@@ -34,6 +38,27 @@ REPAIR_INSTRUCTIONS = (
 
 def _fact_key(row: Any) -> tuple[str, str, str]:
     return row.subject_type, row.subject_id, row.field
+
+
+def align_fact_evidence(extraction: ChapterFactExtractionV1, content: str) -> tuple[ChapterFactExtractionV1, list[dict]]:
+    """Correct offsets only for unique, verbatim quotes in the fixed revision.
+
+    Never normalize a quote, choose between repeated occurrences, or mutate the
+    original proposal. Missing/ambiguous quotes remain for strict validation.
+    """
+    aligned = extraction.model_copy(deep=True)
+    corrections = []
+    for index, fact in enumerate(aligned.facts):
+        evidence = fact.evidence
+        if content[evidence.start:evidence.start + len(evidence.quote)] == evidence.quote:
+            continue
+        start = content.find(evidence.quote)
+        if start < 0 or content.find(evidence.quote, start + 1) >= 0:
+            continue
+        corrections.append({"index": index, "original_start": evidence.start, "start": start,
+                            "quote_length": len(evidence.quote)})
+        evidence.start = start
+    return aligned, corrections
 
 
 def validate_extraction(
@@ -101,15 +126,32 @@ async def extract_facts(material: dict, *, repair: dict | None = None,
 
 
 async def review_facts(material: dict, extraction: dict, *,
+                       retry: dict | None = None,
                        before_send: Callable[[], Awaitable[Any]] | None = None) -> tuple[dict, dict]:
     """Independently review every extracted proposal."""
-    schema, usage = await structured_advice(
-        {}, REVIEW_INSTRUCTIONS, {**material, "extraction": extraction}, ChapterFactReviewV1,
-        before_send=before_send,
-    )
-    checked = ChapterFactReviewV1.model_validate(
-        schema.model_dump(mode="json"), context={"fact_count": len(extraction["facts"])},
-    )
+    expected = list(range(len(extraction["facts"])))
+    payload = {**material, "extraction": extraction,
+               "review_contract": {"index_base": 0, "expected_indices": expected,
+                   "candidates": [{"index": index, **{key: fact[key] for key in ("subject_type", "subject_id", "field")}}
+                                  for index, fact in enumerate(extraction["facts"])]}}
+    if retry:
+        payload["previous_review_error"] = {key: retry[key] for key in ("code", "message", "expected_indices", "received_indices") if key in retry}
+    report = None
+    try:
+        schema, usage = await structured_advice(
+            {}, REVIEW_INSTRUCTIONS, payload, ChapterFactReviewV1, before_send=before_send,
+        )
+        report = schema.model_dump(mode="json")
+        checked = ChapterFactReviewV1.model_validate(report, context={"fact_count": len(expected)})
+    except ValidationError as exc:
+        details = {"expected_indices": expected,
+                   "validation_errors": [{"loc": list(row["loc"]), "type": row["type"], "message": row["msg"]}
+                                         for row in exc.errors(include_input=False, include_url=False)]}
+        if report is not None:
+            details.update(received_indices=[row["index"] for row in report["decisions"]], rejected_review=report)
+        raise DomainApiError("CHAPTER_FACT_REVIEW_INVALID",
+            "事实审核未完整对应候选，或返回格式无效；正文和事实候选已保留。",
+            status_code=502, details=details) from exc
     return checked.model_dump(mode="json"), usage
 
 
@@ -128,6 +170,18 @@ def public_current_facts(rows: list[dict]) -> list[dict]:
     return [current[key] for key in sorted(current)]
 
 
+def current_facts_for_writing(facts: list[dict]) -> list[dict]:
+    """Expose complete effective values and provenance, without replaying audit evidence.
+
+    The full facts (including before values and exact quotes) remain stored and
+    fingerprinted. Later writing needs the effective after value, not the old
+    transition or several thousand characters of evidence for each field.
+    """
+    fields = ("subject_type", "subject_id", "field", "after", "risk",
+              "chapter_id", "revision_id", "content_hash")
+    return [{key: deepcopy(fact[key]) for key in fields if key in fact} for fact in facts]
+
+
 async def adopt_fact_batch(
     novel_id: str,
     chapter: dict,
@@ -137,6 +191,7 @@ async def adopt_fact_batch(
     merged: dict,
     attempts: list[dict],
     *,
+    evidence_alignments: list[dict] | None = None,
     session=None,
 ) -> dict:
     """Commit one immutable, idempotent fact batch bound to the saved revision."""
@@ -159,6 +214,8 @@ async def adopt_fact_batch(
         "reviews": deepcopy(reviews),
         "attempts": deepcopy(attempts),
     }
+    if evidence_alignments:
+        payload["evidence_alignments"] = deepcopy(evidence_alignments)
     fingerprint = canonical_request_hash(payload)
     identity = f"auto-facts:{revision['_id']}"
 

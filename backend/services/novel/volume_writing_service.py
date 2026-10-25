@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from bson import ObjectId, BSON
 from pymongo import ReturnDocument
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from backend.api.error_protocol import DomainApiError, exception_to_error
 from backend.db.base import BaseRepository
@@ -22,9 +22,17 @@ from backend.services.assistant.runtime import book_lease
 from backend.services.novel.chapter_service import ChapterService
 from backend.services.novel.volume_writing_contract import VolumeWritingStart
 from backend.services.novel import volume_writing_log
+from backend.services.novel import volume_writing_preparation as preparation
+from backend.services.novel.first_chapter_save import save_candidate as save_preparation_candidate
 from backend.services.novel.first_chapter_review import review_candidate
+from backend.services.novel.volume_consistency_repair import (
+    MAX_CONSISTENCY_REPAIRS, PLAN_REPAIR_FIELDS, repair_chapter_candidate, repair_plan_candidate, validate_repaired_plan,
+    empty_plan_pov_ids,
+)
+from backend.llm.schemas.writing_pydantic import ChapterContentResultV1
 from backend.services.novel.first_chapter_service import attach_review_sources
 from backend.services.novel import chapter_fact_service
+from backend.services.novel.model_wait import ModelWaitStopped, wait_for_model, MODEL_TOTAL_SECONDS
 from backend.services.novel.chapter_fact_contract import ChapterFactExtractionV1, ChapterFactReviewV1
 from backend.services.novel.writing_context import load_writing_context, load_writing_parents
 from backend.services.novel.writing_contract import WritingConfirmV1
@@ -55,17 +63,18 @@ def planned_count(scene: dict, existing: int) -> int:
     return (scene.get("planning") or {}).get("target_chapter_count") or max(1, existing)
 
 
-async def catalog(novel_id: str, volume_id: str) -> dict:
-    await load_writing_parents(novel_id, "volume", volume_id)
+async def catalog(novel_id: str, volume_id: str, *, full: bool = False, session=None) -> dict:
+    chain = await load_writing_parents(novel_id, "volume", volume_id, session=session)
+    volume = chain[-1][1]
     query = {"novel_id": ObjectId(novel_id), "volume_id": ObjectId(volume_id), "is_deleted": False}
-    arcs = await BaseRepository("arcs").collection.find(query).sort([("order_index", 1), ("_id", 1)]).to_list(None)
+    arcs = await BaseRepository("arcs").collection.find(query, session=session).sort([("order_index", 1), ("_id", 1)]).to_list(None)
     arc_order = {arc["_id"]: index for index, arc in enumerate(arcs)}
-    scenes = await BaseRepository("scenes").collection.find(query).to_list(None)
+    scenes = await BaseRepository("scenes").collection.find(query, session=session).to_list(None)
     scenes = [scene for scene in scenes if scene["arc_id"] in arc_order]
     scenes.sort(key=lambda scene: (arc_order[scene["arc_id"]], scene["order_index"], str(scene["_id"])))
-    directory = await ChapterService.list_chapters(novel_id, volume_id=volume_id)
+    directory = await ChapterService.list_chapters(novel_id, volume_id=volume_id, session=session)
     # 使用同一套父链过滤后的目录，不把回收站或失联子项纳入任务。
-    documents = await BaseRepository("chapters").collection.find({**query, "_id": {"$in": [row["_id"] for row in directory]}}).to_list(None)
+    documents = await BaseRepository("chapters").collection.find({**query, "_id": {"$in": [row["_id"] for row in directory]}}, session=session).to_list(None)
     by_id = {doc["_id"]: doc for doc in documents}
     chapters = [by_id[row["_id"]] for row in directory if row["_id"] in by_id]
     fields = ("_id", "arc_id", "order_index", "title", "summary", "planning")
@@ -74,9 +83,12 @@ async def catalog(novel_id: str, volume_id: str) -> dict:
     written = sum(bool(chapter.get("content", "").strip()) for chapter in chapters)
     missing = sum(max(0, planned_count(scene, sum(chapter["scene_id"] == scene["_id"] for chapter in chapters))
                       - sum(chapter["scene_id"] == scene["_id"] for chapter in chapters)) for scene in scenes)
-    return {"scenes": scenes, "chapters": chapters, "signature": signature,
+    if full:
+        signature = preparation.structure_signature(volume, arcs, scenes, chapters)
+    return {"volume": volume, "arcs": arcs, "scenes": scenes, "chapters": chapters, "signature": signature,
             "summary": {"scenes": len(scenes), "chapters": len(chapters), "written": written,
-                        "missing_plans": missing, "pending_bodies": len(chapters) - written + missing}}
+                        "missing_plans": missing, "pending_bodies": len(chapters) - written + missing,
+                        **(preparation.extra_summary(volume, arcs, scenes) if full else {})}}
 
 
 def public_job(job: dict | None):
@@ -93,6 +105,8 @@ def public_job(job: dict | None):
             "cancel_requested": job.get("cancel_requested", False), "summary": job["summary"],
             "created_chapters": len(job.get("created_ids", [])), "written_chapters": len(job.get("written_ids", [])),
             "skipped_chapters": len(job.get("skipped_ids", [])), "completed_scenes": len(job.get("completed_scenes", [])),
+            "complete_planning": preparation.complete_mode(job), "completed_arcs": len(job.get("completed_arcs", [])),
+            "created_arcs": len(job.get("created_arc_ids", [])), "created_scenes": len(job.get("created_scene_ids", [])),
             "current": job.get("current"), "error": job.get("error"),
             "has_saved_candidate": has_saved_candidate,
             "created_at": job["created_at"].replace(tzinfo=timezone.utc).isoformat(),
@@ -100,7 +114,7 @@ def public_job(job: dict | None):
 
 
 async def preview(novel_id: str, volume_id: str):
-    data = await catalog(novel_id, volume_id)
+    data = await catalog(novel_id, volume_id, full=True)
     return data["summary"]
 
 
@@ -157,12 +171,15 @@ async def _start(novel_id: str, volume_id: str, request: VolumeWritingStart, key
         return public_job(existing)
     if await BaseRepository("first_chapter_jobs").collection.find_one({"novel_id": ObjectId(novel_id), "active": True}):
         raise DomainApiError("VOLUME_WRITING_BUSY", "这本书已有一键首章任务，请先完成或结束原任务。", status_code=409)
-    data = await catalog(novel_id, volume_id)
-    if not data["scenes"]:
+    data = await catalog(novel_id, volume_id, full=request.complete_planning)
+    if not data["scenes"] and not request.complete_planning:
         raise DomainApiError("VOLUME_WRITING_NO_SCENES", "当前卷没有可写作的场景，请先保存场景规划。", status_code=422)
     refs = {}
-    for task, field in (("plan_chapters_by_ai", "plan_flow_ref"), ("write_chapter_by_ai", "writing_flow_ref")):
-        ref = getattr(request, field)
+    tasks = {"plan_chapters_by_ai": request.plan_flow_ref, "write_chapter_by_ai": request.writing_flow_ref}
+    if request.complete_planning:
+        preparation.check_budgets(data)
+        tasks.update({task: None for task in preparation.PREPARATION_TASKS})
+    for task, ref in tasks.items():
         try:
             flow = flow_store().get(ref.id, ref.revision) if ref else flow_store().get_default(task)
         except KeyError as exc:
@@ -247,9 +264,49 @@ async def should_stop(job_id):
     return False
 
 
+async def model_call(job_id, call, log, *, path, label, total_seconds=MODEL_TOTAL_SECONDS):
+    """Observe durable control flags while the model is waiting, never during saves."""
+    async def control_state():
+        state = await jobs().find_one({"_id": job_id},
+            {"owner": 1, "status": 1, "pause_requested": 1, "cancel_requested": 1})
+        if not state or state.get("owner") != OWNER or state.get("status") != "running":
+            raise asyncio.CancelledError()
+        return state
+
+    async def progress(data):
+        await log({"instance_path": path, "label": label, **data})
+
+    return await wait_for_model(call, control=control_state, progress=progress,
+                                label=label, total_seconds=total_seconds)
+
+
 async def next_step(job: dict, data: dict):
     if data["signature"] != job["catalog_signature"]:
         raise DomainApiError("VOLUME_WRITING_STRUCTURE_CHANGED", "卷内篇章、场景或场景规划已变化。请结束本轮并重新检查范围；已保存正文会保留。", status_code=409)
+    if preparation.complete_mode(job):
+        return await next_complete_step(job, data)
+    return await next_scene_step(job, data)
+
+
+async def next_complete_step(job: dict, data: dict):
+    preparation.check_budgets(data)
+    step = await preparation.choose_preparation(data)
+    if step:
+        return step
+    completed = []
+    for arc in data["arcs"]:
+        step = await preparation.choose_preparation(data, arc)
+        if not step:
+            step = await next_scene_step(job, {**data, "scenes": [row for row in data["scenes"] if row["arc_id"] == arc["_id"]]})
+        if step:
+            await update(job["_id"], {}, {"completed_arcs": completed})
+            return step
+        completed.append(str(arc["_id"]))
+    await update(job["_id"], {}, {"completed_arcs": completed})
+    return None
+
+
+async def next_scene_step(job: dict, data: dict):
     skipped, completed = [], []
     for scene in data["scenes"]:
         children = [row for row in data["chapters"] if row["scene_id"] == scene["_id"]]
@@ -324,20 +381,41 @@ async def make_pending(job, task, target, count):
         return pending
     chapter = task == "write_chapter_by_ai"
     inputs = {"user_guidance": job["settings"]["user_guidance"]}
-    if not chapter:
+    if task in {"plan_arcs_by_ai", "plan_scenes_by_ai"}:
+        inputs["count_mode"] = "auto"
+    elif task == "plan_chapters_by_ai":
         inputs.update(count=count, count_mode="fixed")
-    scope = {"novel_id": str(job["novel_id"]), "target_type": "chapter" if chapter else "scene", "target_id": str(target["_id"]),
-             **({"expected_version": target["version"]} if chapter else {"mode": "append"})}
-    request = GraphRunRequest(flow_ref=job["flow_refs"][task], flow_inputs=inputs, scope=scope,
+    scope = {"novel_id": str(job["novel_id"])}
+    if task.startswith("create_") or task == "confirm_existing_preparation":
+        scope.update(volume_id=str(target["_id"]), volume_expected_version=target["version"])
+        inputs.update(selection_mode="auto", **({"location_count": 0} if task == "create_locations_for_volume_by_ai" else {"new_count": 0}))
+    else:
+        kind = {"write_chapter_by_ai": "chapter", "plan_chapters_by_ai": "scene", "plan_arcs_by_ai": "volume",
+                "plan_scenes_by_ai": "arc", "generate_volume_plot_by_ai": "volume", "generate_arc_plot_by_ai": "arc"}[task]
+        scope.update(target_type=kind, target_id=str(target["_id"]))
+        scope.update({"expected_version": target["version"]} if chapter or task.startswith("generate_") else {"mode": "append"})
+    if task == "confirm_existing_preparation":
+        inputs = {"kind": target["preparation_kind"]}
+    request = GraphRunRequest(flow_ref=job["flow_refs"].get(task), flow_inputs=inputs, scope=scope,
                               generation_params=job["settings"]["generation_params"], use_stream=False)
-    current = {"stage": "writing" if chapter else "planning", "title": target["title"], "target_id": str(target["_id"]),
+    current = {"stage": preparation.STAGES.get(task, "writing" if chapter else "planning"), "title": target["title"], "target_id": str(target["_id"]),
                "scene_id": str(target["scene_id"] if chapter else target["_id"]), "node": ""}
     pending = {"task": task, "request": request.model_dump(mode="json"), "key": uuid4().hex, "result": None}
+    if task.startswith("generate_"):
+        pending["original_planning"] = deepcopy(target.get("planning") or {})
+    if task == "confirm_existing_preparation":
+        kind = target["preparation_kind"]
+        states = [] if kind == "locations" else await BaseRepository(
+            "faction_volume_states" if kind == "factions" else "character_volume_states").collection.find({
+                "novel_id": job["novel_id"], "volume_id": target["_id"], "is_deleted": False}).to_list(None)
+        pending["result"] = {"candidate": {"kind": kind, "volume_id": str(target["_id"]), "expected_version": target["version"]},
+            "context": {"plot": target["plot"], "existing_participation_plans": states, "location_ids": target.get("location_ids", [])}}
+        pending["preparation_versions"] = {str(row["_id"]): row.get("version") for row in states}
     await update(job["_id"], {"pending": pending, "current": current})
     return pending
 
 
-async def perform(job: dict, pending: dict):
+async def perform(job: dict, pending: dict, *, checkpoint_lock=None):
     job_id = job["_id"]
     await volume_writing_log.collection().create_index([("job_id", 1), ("_id", -1)], name="volume_writing_log_history")
     await volume_writing_log.collection().update_many({"job_id": job_id, "state": "running"}, {"$set": {"state": "stopped"}})
@@ -402,8 +480,14 @@ async def perform(job: dict, pending: dict):
                     pending["continuation_owner"] = OWNER
                     await update(job_id, {"pending": pending})
         try:
-            result = await generate_task_flow(pending["task"], request, scope=request.scope, stream=False, on_event=event)
+            # Graphs may contain many model calls; only the stop grace applies to
+            # the whole graph. Completed node checkpoints remain authoritative.
+            result = await model_call(job_id,
+                lambda: generate_task_flow(pending["task"], request, scope=request.scope, stream=False, on_event=event),
+                log, path="_model_wait", label="等待当前生成步骤", total_seconds=None)
         except _StopAfterCheckpoint:
+            await log({"instance_path": "_model_wait", "label": "等待当前生成步骤",
+                       "state": "stopped", "message": "已保留完成节点，按停止请求退出。"})
             return
         except DomainApiError as exc:
             if exc.code in {"AGENT_CONTINUATION_EXPIRED", "AGENT_CONTINUATION_CHANGED"}:
@@ -413,30 +497,28 @@ async def perform(job: dict, pending: dict):
                 raise DomainApiError("VOLUME_WRITING_CONTINUATION_RESET", "本步续跑凭证已失效，已保留完成节点。再次继续将重试未完成的模型步骤。", status_code=409) from exc
             raise
         pending["result"] = result
+        if pending["task"].startswith("generate_") and pending.get("original_planning"):
+            # Fill missing fields, retain meaningful established constraints and allocations.
+            result["candidate"]["planning"].update({key: value for key, value in pending["original_planning"].items()
+                if value not in (None, "", []) or key.endswith("_ids")})
         # 先持久保存完整候选和固定确认键，再进行业务写入。
         await update(job_id, {"pending": pending, "current.stage": "saving", "current.node": ""})
+        await log({"instance_path": "_model_wait", "label": "等待当前生成步骤",
+                   "state": "done", "message": "模型结果已保留。"})
     if await should_stop(job_id):
         return
+    if preparation.complete_mode(job):
+        preparation.require_missing_plan(pending["task"], pending["result"])
+    if not await ensure_consistency(job, pending, log, current_log):
+        return
+    # The consistency loop may have replaced the candidate. Never adopt the old text.
     result = pending["result"]
-    if pending.get("review") is None:
-        if not result.get("context"):
-            # As in first-chapter writing, retain paid output before reading audit sources.
-            result = await attach_review_sources(pending["task"], result, pending["request"]["generation_params"])
-            if len(BSON.encode({"result": result})) > 12_000_000:
-                raise DomainApiError("VOLUME_WRITING_REVIEW_TOO_LARGE", "审校资料过大，原候选已保留，请缩小流程资料范围。", status_code=422)
-            pending["result"] = result
-        await update(job_id, {"pending": pending, "current.stage": "reviewing", "current.node": "一致性检查"})
-        current_log["stage"] = "reviewing"
-        await log({"instance_path": "_consistency_review", "label": "核对剧情与事实一致性", "state": "running"})
-        pending["review"] = await review_candidate(pending["task"], result, {})
-        await update(job_id, {"pending": pending})
-        await log({"instance_path": "_consistency_review", "label": "核对剧情与事实一致性",
-                   "state": "failed" if pending["review"]["issues"] else "done", "outputs": pending["review"]})
-    if pending["review"]["issues"]:
-        raise DomainApiError("VOLUME_WRITING_CONSISTENCY_CONFLICT", "一致性检查未通过，候选与引证已保留，尚未正式保存。请查看日志，处理冲突后结束本轮重新生成。", status_code=409)
     if await should_stop(job_id):
         return
     chapter = pending["task"] == "write_chapter_by_ai"
+    if preparation.complete_mode(job) and not chapter:
+        await save_structure_step(job, pending, log, current_log, checkpoint_lock=checkpoint_lock)
+        return
     if pending.get("saved_chapter") is None:
         await update(job_id, {"current.stage": "saving", "current.node": ""})
         current_log["stage"] = "saving"
@@ -472,6 +554,141 @@ async def perform(job: dict, pending: dict):
     await update(job_id, {"pending": None, "current": None}, {"written_ids": [pending["saved_chapter"]["id"]]})
 
 
+async def save_structure_step(job, pending, log, current_log, *, checkpoint_lock=None):
+    """Adopt missing preparation and advance its scope in the same transaction."""
+    await update(job["_id"], {"current.stage": "saving", "current.node": ""})
+    current_log["stage"] = "saving"
+    await log({"instance_path": "_save", "label": "保存并纳入本轮写作", "state": "running"})
+    async def save(session):
+        current = await jobs().find_one({"_id": job["_id"]}, session=session)
+        if not current or current.get("owner") != OWNER or current["status"] != "running":
+            raise DomainApiError("VOLUME_WRITING_INTERRUPTED", "任务占用已变化，候选已保留。", status_code=409)
+        if not current.get("pending") or current["pending"]["key"] != pending["key"]:
+            return  # The original commit already advanced this checkpoint.
+        before = await catalog(str(job["novel_id"]), str(job["volume_id"]), full=True, session=session)
+        if before["signature"] != current["catalog_signature"]:
+            raise DomainApiError("VOLUME_WRITING_STRUCTURE_CHANGED", "生成期间规划或目录已被修改，候选已保留，请核对后重新开始。", status_code=409)
+        if pending["task"] == "confirm_existing_preparation" and pending["request"]["flow_inputs"]["kind"] != "locations":
+            kind = pending["request"]["flow_inputs"]["kind"]
+            rows = await BaseRepository("faction_volume_states" if kind == "factions" else "character_volume_states").collection.find({
+                "novel_id": job["novel_id"], "volume_id": job["volume_id"], "is_deleted": False}, session=session).to_list(None)
+            if {str(row["_id"]): row.get("version") for row in rows} != pending["preparation_versions"]:
+                raise DomainApiError("VOLUME_WRITING_PREPARATION_CHANGED", "卷参与资料在审核期间已修改，请核对后重新开始。", status_code=409)
+        saved = await save_preparation_candidate(str(job["novel_id"]), pending["task"], pending["result"], pending["key"], session=session)
+        after = await catalog(str(job["novel_id"]), str(job["volume_id"]), full=True, session=session)
+        preparation.check_budgets(after)
+        await BaseRepository("volume_writing_preparation_reports").collection.insert_one({
+            "_id": f"{job['_id']}:{pending['key']}", "job_id": job["_id"], "novel_id": job["novel_id"],
+            "volume_id": job["volume_id"], "task": pending["task"], "request": pending["request"],
+            "candidate": pending["result"]["candidate"], "basis": pending["result"].get("basis"),
+            "review": pending["review"], "consistency_repairs": pending.get("consistency_repairs", []), "created_at": now()}, session=session)
+        counters = {"plan_arcs_by_ai": "created_arc_ids", "plan_scenes_by_ai": "created_scene_ids", "plan_chapters_by_ai": "created_ids"}
+        values = {"$set": {"pending": None, "current": None, "catalog_signature": after["signature"],
+                            "summary": after["summary"], "updated_at": now()}}
+        if pending["task"] in counters:
+            values["$addToSet"] = {counters[pending["task"]]: {"$each": saved["ids"]}}
+        await jobs().update_one({"_id": job["_id"], "owner": OWNER, "status": "running"}, values, session=session)
+    await run_preparation_checkpoint(save, checkpoint_lock)
+    await log({"instance_path": "_save", "label": "保存并纳入本轮写作", "state": "done"})
+
+
+async def run_preparation_checkpoint(save, checkpoint_lock=None):
+    # Heartbeats must not invalidate our own transaction snapshot. A concurrent
+    # pause can still conflict; retry only a positively aborted write conflict,
+    # never an uncertain commit or a general network failure.
+    async with checkpoint_lock if checkpoint_lock is not None else asyncio.Lock():
+        for attempt in range(3):
+            try:
+                return await run_mongo_write_unit(save, "save_volume_preparation_checkpoint", require_transaction=True)
+            except OperationFailure as exc:
+                if (attempt == 2 or exc.code != 112 or not exc.has_error_label("TransientTransactionError")
+                        or exc.has_error_label("UnknownTransactionCommitResult")):
+                    raise
+                await asyncio.sleep(.05 * (attempt + 1))
+
+
+def check_pending_size(pending: dict) -> None:
+    # Leave room below Mongo's document limit for the rest of the job and future checkpoints.
+    if len(BSON.encode({"pending": pending})) > 12_000_000:
+        raise DomainApiError("VOLUME_WRITING_REVIEW_TOO_LARGE", "审校与修订资料过大，已保留上一个检查点，请缩小流程资料范围。", status_code=422)
+
+
+async def ensure_consistency(job: dict, pending: dict, log, current_log: dict) -> bool:
+    """Durable review -> at most two candidate repairs -> independent re-review."""
+    job_id = job["_id"]
+    chapter = pending["task"] == "write_chapter_by_ai"
+    kind = "正文" if chapter else "规划"
+    while True:
+        if await should_stop(job_id):
+            return False
+        result = pending["result"]
+        repairs = pending.get("consistency_repairs", [])
+        completed = sum("after_candidate" in row for row in repairs)
+        if pending.get("review") is None:
+            await review_pending(job_id, pending, log, current_log, completed)
+            result = pending["result"]
+        if await should_stop(job_id):
+            return False
+        if not pending["review"]["issues"]:
+            return True
+        # Plot rewrites and entity preparation retain their explicit confirmation gates.
+        if not (chapter or pending["task"] in PLAN_REPAIR_FIELDS) or pending.get("saved_chapter"):
+            raise DomainApiError("VOLUME_WRITING_CONSISTENCY_CONFLICT", "一致性检查未通过，候选与引证已保留，尚未正式保存。请查看日志，处理冲突后结束本轮重新生成。", status_code=409)
+        if completed >= MAX_CONSISTENCY_REPAIRS:
+            raise DomainApiError("VOLUME_WRITING_CONSISTENCY_CONFLICT", f"{kind}已自动修订2次，独立复核仍发现冲突。候选、修订记录和引证已保留，尚未正式保存。请查看日志，处理冲突后结束本轮重新生成。", status_code=409)
+        # An unfinished request reuses its slot after timeout/restart. A completed
+        # repair is committed with review=None so it can only be re-reviewed, not regenerated.
+        if not repairs or "after_candidate" in repairs[-1]:
+            repairs.append({"before_candidate": deepcopy(result["candidate"]),
+                            "before_review": deepcopy(pending["review"]), "started_at": now()})
+            pending["consistency_repairs"] = repairs
+        label = f"修订{kind}候选（{completed + 1}/{MAX_CONSISTENCY_REPAIRS}）"
+        path = f"_consistency_repair_{completed + 1}"
+        check_pending_size(pending)
+        await update(job_id, {"pending": pending, "current.stage": "reviewing", "current.node": label})
+        current_log["stage"] = "reviewing"
+        await log({"instance_path": path, "label": label, "state": "running",
+                   "message": f"仅修订当前未保存{kind}，已保存内容保持原样。"})
+        candidate, metadata = await model_call(job_id,
+            lambda: repair_chapter_candidate(result, pending["review"]) if chapter else repair_plan_candidate(pending["task"], result, pending["review"]),
+            log, path=path, label=label)
+        candidate = (ChapterContentResultV1.model_validate(candidate).model_dump(mode="json") if chapter
+                     else validate_repaired_plan(pending["task"], result["candidate"], candidate,
+                                                 empty_pov_ids=empty_plan_pov_ids(result)))
+        repairs[-1].update(after_candidate=deepcopy(candidate), model=metadata, completed_at=now())
+        result["candidate"] = candidate
+        pending["review"] = None
+        check_pending_size(pending)
+        # Persist returned text before honoring a stop request, just like initial generation.
+        await update(job_id, {"pending": pending})
+        await log({"instance_path": path, "label": label, "state": "done",
+                   "message": "修订结果已保留，等待独立复核。", "outputs": {"candidate": candidate, "model": metadata}})
+
+
+async def review_pending(job_id, pending, log, current_log, completed):
+    result = pending["result"]
+    if not result.get("context"):
+        # As in first-chapter writing, retain paid output before reading audit sources.
+        result = await attach_review_sources(pending["task"], result, pending["request"]["generation_params"])
+        pending["result"] = result
+    check_pending_size(pending)
+    kind = "正文" if pending["task"] == "write_chapter_by_ai" else "规划"
+    label = f"复核修订{kind}（{completed}/{MAX_CONSISTENCY_REPAIRS}）" if completed else "核对剧情与事实一致性"
+    path = f"_consistency_review_{completed}" if completed else "_consistency_review"
+    await update(job_id, {"pending": pending, "current.stage": "reviewing", "current.node": label})
+    current_log["stage"] = "reviewing"
+    await log({"instance_path": path, "label": label, "state": "running"})
+    pending["review"] = await model_call(job_id,
+        lambda: review_candidate(pending["task"], result, {}), log,
+        path=path, label=label)
+    if completed:
+        pending["consistency_repairs"][-1]["after_review"] = deepcopy(pending["review"])
+    check_pending_size(pending)
+    await update(job_id, {"pending": pending})
+    await log({"instance_path": path, "label": label,
+               "state": "failed" if pending["review"]["issues"] else "done", "message": "", "outputs": pending["review"]})
+
+
 async def record_revision_review(job, pending, actual, *, session):
     """The immutable adopted revision and its review must commit together."""
     revision = await BaseRepository("chapter_revisions").collection.find_one({"chapter_id": actual["_id"], "version": actual["version"]}, session=session)
@@ -480,7 +697,8 @@ async def record_revision_review(job, pending, actual, *, session):
     await BaseRepository("volume_writing_reports").collection.update_one({"_id": f"{job['_id']}:{pending['key']}"},
         {"$setOnInsert": {"job_id": job["_id"], "novel_id": job["novel_id"], "chapter_id": actual["_id"],
                           "revision_id": revision["_id"], "content_hash": revision["content_hash"],
-                          "review": pending["review"], "basis": pending["result"]["basis"], "created_at": now()}}, upsert=True, session=session)
+                          "review": pending["review"], "basis": pending["result"]["basis"],
+                          "consistency_repairs": pending.get("consistency_repairs", []), "created_at": now()}}, upsert=True, session=session)
     return revision
 
 
@@ -524,19 +742,20 @@ async def perform_fact_closure(job: dict, pending: dict, log, current_log: dict)
             await update(job_id, {"current.stage": "fact_extracting", "current.node": "提取章后事实"})
             current_log["stage"] = "fact_extracting"
             await log({"instance_path": "_fact_extract", "label": "提取章后事实", "state": "running"})
-            extracted, usage = await chapter_fact_service.extract_facts(
-                material,
-                repair=state["attempts"][-1] if state["attempts"] else None,
-                before_send=verify_revision,
-            )
+            extracted, usage = await model_call(job_id,
+                lambda: chapter_fact_service.extract_facts(material,
+                    repair=state["attempts"][-1] if state["attempts"] else None,
+                    before_send=verify_revision),
+                log, path="_fact_extract", label="提取章后事实")
             state["extraction"] = extracted
             state["extraction_usage"] = usage
             await update(job_id, {"pending": pending})
             await log({"instance_path": "_fact_extract", "label": "提取章后事实", "state": "done",
-                       "outputs": {"count": len(extracted["facts"]), "summary": extracted["summary"]}})
+                       "message": "", "outputs": {"count": len(extracted["facts"]), "summary": extracted["summary"]}})
         extraction_model = ChapterFactExtractionV1.model_validate(state["extraction"])
         try:
-            chapter_fact_service.validate_extraction(extraction_model, revision["content"], allowed, current)
+            aligned, corrections = chapter_fact_service.align_fact_evidence(extraction_model, revision["content"])
+            validated = chapter_fact_service.validate_extraction(aligned, revision["content"], allowed, current)
         except DomainApiError as exc:
             if exc.code not in {
                 "CHAPTER_FACT_SUBJECT_UNKNOWN", "CHAPTER_FACT_EVIDENCE_MISMATCH",
@@ -563,6 +782,20 @@ async def perform_fact_closure(job: dict, pending: dict, log, current_log: dict)
             if await should_stop(job_id):
                 return
             continue
+        if corrections:
+            state.setdefault("evidence_alignments", []).append({
+                "original_extraction": deepcopy(state["extraction"]),
+                "previous_reviews": deepcopy(state["reviews"]), "corrections": corrections,
+            })
+            state["extraction"] = validated
+            state["reviews"] = []
+            check_pending_size(pending)
+            await update(job_id, {"pending": pending})
+            await log({"instance_path": f"_fact_evidence_alignment_{len(state['evidence_alignments'])}",
+                       "label": "校正事实引文位置", "state": "done",
+                       "message": "引文在固定正文中完全且唯一匹配，已校正字符位置，等待独立审核。",
+                       "outputs": {"corrections": corrections}})
+        extraction_model = aligned
         if await should_stop(job_id):
             return
 
@@ -572,11 +805,34 @@ async def perform_fact_closure(job: dict, pending: dict, log, current_log: dict)
             await update(job_id, {"current.stage": "fact_reviewing", "current.node": "独立审核章后事实"})
             current_log["stage"] = "fact_reviewing"
             await log({"instance_path": f"_fact_review_{number}", "label": "独立审核章后事实", "state": "running"})
-            reviewed, usage = await chapter_fact_service.review_facts(material, state["extraction"], before_send=verify_revision)
+            try:
+                reviewed, usage = await model_call(job_id,
+                    lambda: chapter_fact_service.review_facts(material, state["extraction"],
+                        retry=(state.get("review_attempts") or [{}])[-1].get("validation_error"),
+                        before_send=verify_revision),
+                    log, path=f"_fact_review_{number}", label="独立审核章后事实")
+            except DomainApiError as exc:
+                if exc.code != "CHAPTER_FACT_REVIEW_INVALID":
+                    raise
+                review_attempts = state.setdefault("review_attempts", [])
+                if len(review_attempts) >= 2:
+                    raise DomainApiError(exc.code,
+                        "事实审核两次自动重试后仍未完整对应候选或格式无效；正文和事实候选已保留，可重试当前审核。",
+                        status_code=502, details=exc.details) from exc
+                error = {"code": exc.code, "message": exc.message, **exc.details}
+                review_attempts.append({"review_number": number, "validation_error": error})
+                check_pending_size(pending)
+                await update(job_id, {"pending": pending})
+                await log({"instance_path": f"_fact_review_retry_{len(review_attempts)}",
+                           "label": "重新审核章后事实", "state": "done", "message": exc.message,
+                           "outputs": {"attempt": len(review_attempts), "validation_error": error}})
+                if await should_stop(job_id):
+                    return
+                continue
             state["reviews"].append({"review": reviewed, "usage": usage})
             await update(job_id, {"pending": pending})
             await log({"instance_path": f"_fact_review_{number}", "label": "独立审核章后事实", "state": "done",
-                       "outputs": reviewed})
+                       "message": "", "outputs": reviewed})
             if await should_stop(job_id):
                 return
         review_models = [ChapterFactReviewV1.model_validate(row["review"], context={"fact_count": len(extraction_model.facts)}) for row in state["reviews"]]
@@ -635,6 +891,7 @@ async def perform_fact_closure(job: dict, pending: dict, log, current_log: dict)
         batch = await chapter_fact_service.adopt_fact_batch(
             str(job["novel_id"]), chapter, revision, state["extraction"],
             [row["review"] for row in state["reviews"]], state["merged"], state["attempts"],
+            evidence_alignments=state.get("evidence_alignments"),
         )
         state["batch_id"] = batch["_id"]
         await update(job_id, {"pending": pending})
@@ -645,12 +902,14 @@ async def perform_fact_closure(job: dict, pending: dict, log, current_log: dict)
 
 async def run_job(job_id: ObjectId):
     task = asyncio.current_task()
+    checkpoint_lock = asyncio.Lock()
     async def heartbeat():
         while True:
             await asyncio.sleep(10)
             try:
-                changed = await jobs().update_one({"_id": job_id, "owner": OWNER, "status": "running"},
-                    {"$set": {"lease_until": now() + timedelta(seconds=LEASE_SECONDS)}})
+                async with checkpoint_lock:
+                    changed = await jobs().update_one({"_id": job_id, "owner": OWNER, "status": "running"},
+                        {"$set": {"lease_until": now() + timedelta(seconds=LEASE_SECONDS)}})
                 if changed.matched_count != 1:
                     task.cancel()
                     return
@@ -665,7 +924,7 @@ async def run_job(job_id: ObjectId):
         async with book_lease(str(job["novel_id"]), f"volume-writing:{job_id}"):
             while not await should_stop(job_id):
                 job = await jobs().find_one({"_id": job_id})
-                data = await catalog(str(job["novel_id"]), str(job["volume_id"]))
+                data = await catalog(str(job["novel_id"]), str(job["volume_id"]), full=preparation.complete_mode(job))
                 if data["signature"] != job["catalog_signature"]:
                     raise DomainApiError("VOLUME_WRITING_STRUCTURE_CHANGED", "场景范围或规划已变化，请结束本轮后重新开始。已保存章节保留。", status_code=409)
                 pending = job.get("pending")
@@ -675,13 +934,19 @@ async def run_job(job_id: ObjectId):
                         await update(job_id, {"status": "completed", "active": False, "current": None, "lease_until": now()})
                         break
                     pending = await make_pending(job, *step)
-                await perform(job, deepcopy(pending))
+                await perform(job, deepcopy(pending), checkpoint_lock=checkpoint_lock)
+    except ModelWaitStopped:
+        await volume_writing_log.collection().update_many({"job_id": job_id, "state": "running"},
+            {"$set": {"state": "stopped", "updated_at": now()}})
+        await should_stop(job_id)
     except asyncio.CancelledError:
         await jobs().update_one({"_id": job_id, "owner": OWNER, "status": "running"},
             {"$set": {"status": "paused", "lease_until": now(), "updated_at": now(), "error": {"code": "VOLUME_WRITING_INTERRUPTED", "message": "服务停止或连接中断，任务进度已保留。"}}})
     except Exception as exc:
         logger.exception("逐卷写作暂停 job=%s", job_id)
         _, code, message, fields, _ = exception_to_error(exc, fallback_message="逐卷写作暂时失败，进度已保留，请重试。")
+        await volume_writing_log.collection().update_many({"job_id": job_id, "state": "running"},
+            {"$set": {"state": "failed", "updated_at": now()}})
         failed_job = await jobs().find_one({"_id": job_id})
         pending = failed_job.get("pending") or {}
         try:

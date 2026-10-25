@@ -1,4 +1,4 @@
-"""逐卷写作只追加缺少的章计划，并写入空正文。"""
+"""新逐卷任务补齐本卷规划后写作，旧任务保留启动时的场景范围。"""
 from pydantic import Field, field_validator
 
 from backend.api.contracts import StrictRequestModel
@@ -7,6 +7,7 @@ from backend.services.task_flows.registry import GENERATION_FIELDS
 
 
 class VolumeWritingStart(StrictRequestModel):
+    complete_planning: bool = True
     user_guidance: str = Field(default="", max_length=5000)
     plan_flow_ref: FlowRef | None = None
     writing_flow_ref: FlowRef | None = None
